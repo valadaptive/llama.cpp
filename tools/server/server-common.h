@@ -125,6 +125,13 @@ bool are_lora_equal(
 // get the ids of all enabled loras
 std::vector<size_t> lora_get_enabled_ids(const std::vector<common_adapter_lora_info> & loras);
 
+// control vectors, mirroring the lora helpers above
+std::map<int, float> parse_cvector_request(const json & data);
+
+bool are_cvec_equal(
+        const std::vector<common_adapter_cvec_info> & c1,
+        const std::vector<common_adapter_cvec_info> & c2);
+
 //
 // server_tokens
 //

@@ -216,6 +216,8 @@ int llama_server(common_params & params, int argc, char ** argv) {
         routes.post_responses_tok_oai      = models_routes->proxy_post;
         routes.get_lora_adapters           = models_routes->proxy_get;
         routes.post_lora_adapters          = models_routes->proxy_post;
+        routes.get_cvectors                = models_routes->proxy_get;
+        routes.post_cvectors               = models_routes->proxy_post;
         routes.get_slots                   = models_routes->proxy_get;
         routes.post_slots                  = models_routes->proxy_post;
 
@@ -268,6 +270,9 @@ int llama_server(common_params & params, int argc, char ** argv) {
     // LoRA adapters hotswap
     ctx_http.get ("/lora-adapters",            ex_wrapper(routes.get_lora_adapters));
     ctx_http.post("/lora-adapters",            ex_wrapper(routes.post_lora_adapters));
+    // Control vectors hotswap
+    ctx_http.get ("/cvectors",                 ex_wrapper(routes.get_cvectors));
+    ctx_http.post("/cvectors",                 ex_wrapper(routes.post_cvectors));
     // Save & load slots
     ctx_http.get ("/slots",                    ex_wrapper(routes.get_slots));
     ctx_http.post("/slots/:id_slot",           ex_wrapper(routes.post_slots));

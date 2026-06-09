@@ -71,6 +71,8 @@ struct task_params {
 
     std::map<int, float> lora; // mapping adapter ID -> scale
 
+    std::map<int, float> cvector; // per-request control-vector ID -> scale
+
     std::vector<std::string> antiprompt;
     std::vector<std::string> response_fields;
 

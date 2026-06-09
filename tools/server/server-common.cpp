@@ -166,6 +166,32 @@ std::vector<size_t> lora_get_enabled_ids(const std::vector<common_adapter_lora_i
     return enabled_ids;
 }
 
+std::map<int, float> parse_cvector_request(const json & data) {
+    std::map<int, float> cvec;
+    for (const auto & entry : data) {
+        int   id    = json_value(entry, "id", -1);
+        float scale = json_value(entry, "scale", 0.0f);
+        cvec[id] = scale;
+    }
+    return cvec;
+}
+
+bool are_cvec_equal(
+        const std::vector<common_adapter_cvec_info> & c1,
+        const std::vector<common_adapter_cvec_info> & c2) {
+    if (c1.size() != c2.size()) {
+        return false;
+    }
+    for (size_t i = 0; i < c1.size(); ++i) {
+        // both lists derive from the same base set, so the index identifies the
+        // vector; only the scale can differ
+        if (c1[i].scale != c2[i].scale) {
+            return false;
+        }
+    }
+    return true;
+}
+
 //
 // base64 utils (TODO: use the base64::decode from base64.hpp)
 //

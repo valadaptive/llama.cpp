@@ -236,6 +236,16 @@ std::vector<std::unique_ptr<field>> make_llama_cmpl_schema(const common_params &
             ctx.params.lora = parse_lora_request(lora);
         }));
 
+    add((new field_json("cvector"))
+        ->set_desc("A list of control vectors to apply to this request. Each entry must have `id` and `scale` fields. Vectors not listed default to scale 0.0")
+        ->set_handler([&](field_eval_context & ctx, const json & data) {
+            const auto & cvector = data.at("cvector");
+            if (!cvector.is_array()) {
+                throw std::runtime_error("Error: 'cvector' must be an array of objects with 'id' and 'scale' fields");
+            }
+            ctx.params.cvector = parse_cvector_request(cvector);
+        }));
+
     // sequence breakers for DRY
     // Currently, this is not compatible with TextGen WebUI, Koboldcpp and SillyTavern format
     // Ref: https://github.com/oobabooga/text-generation-webui/blob/d1af7a41ade7bd3c3a463bfa640725edb818ebaf/extensions/openai/typing.py#L39
