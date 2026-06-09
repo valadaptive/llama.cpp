@@ -2552,6 +2552,47 @@ private:
                     res->id = task.id;
                     queue_results.send(std::move(res));
                 } break;
+            case SERVER_TASK_TYPE_LOAD_CVECTOR:
+                {
+                    // resolve the data: in-memory if provided, else load from the file path
+                    common_control_vector_data data = task.load_cvec_data.n_embd != -1
+                        ? task.load_cvec_data
+                        : common_control_vector_load({{ 1.0f, task.load_cvec_path }});
+
+                    if (data.n_embd == -1) {
+                        send_error(task, "failed to load control vector", ERROR_TYPE_INVALID_REQUEST);
+                        break;
+                    }
+                    if (data.n_embd != llama_model_n_embd(model_tgt)) {
+                        send_error(task, "control vector n_embd does not match the model", ERROR_TYPE_INVALID_REQUEST);
+                        break;
+                    }
+
+                    const std::string label = task.load_cvec_path.empty() ? "(in-memory)" : task.load_cvec_path;
+                    common_adapter_cvec_info ci;
+                    ci.path  = label;
+                    ci.scale = task.load_cvec_scale;
+                    ci.data  = std::move(data);
+                    cvec_adapters.push_back(std::move(ci));
+
+                    // first vector loaded (none at launch): resolve the full layer range
+                    if (cvec_il_start < 0) {
+                        cvec_il_start = 1;
+                        cvec_il_end   = llama_model_n_layer(model_tgt);
+                    }
+                    SRV_INF("loaded control vector idx=%d scale=%f from %s\n",
+                            (int) cvec_adapters.size() - 1, task.load_cvec_scale, label.c_str());
+
+                    // return the updated list
+                    auto res = std::make_unique<server_task_result_get_cvec>();
+                    res->id       = task.id;
+                    res->il_start = cvec_il_start;
+                    res->il_end   = cvec_il_end;
+                    for (auto & cv : cvec_adapters) {
+                        res->cvecs.push_back({ cv.path, cv.scale });
+                    }
+                    queue_results.send(std::move(res));
+                } break;
         }
     }
 
@@ -4963,6 +5004,39 @@ void server_routes::init_routes() {
         }
 
         GGML_ASSERT(dynamic_cast<server_task_result_apply_cvec*>(result.get()) != nullptr);
+        res->ok(result->to_json());
+        return res;
+    };
+
+    this->post_cvectors_load = [this](const server_http_req & req) {
+        auto res = create_response();
+        const json body = json::parse(req.body);
+        if (!body.is_object() || !body.contains("path")) {
+            res->error(format_error_response("Request body must be an object with a 'path' field", ERROR_TYPE_INVALID_REQUEST));
+            return res;
+        }
+
+        auto & rd = res->rd;
+        {
+            server_task task(SERVER_TASK_TYPE_LOAD_CVECTOR);
+            task.id              = rd.get_new_id();
+            task.load_cvec_path  = body.at("path").get<std::string>();
+            task.load_cvec_scale = body.value("scale", 1.0f);
+            rd.post_task(std::move(task));
+        }
+
+        auto result = rd.next(req.should_stop);
+        if (!result) {
+            GGML_ASSERT(req.should_stop());
+            return res;
+        }
+
+        if (result->is_error()) {
+            res->error(result->to_json());
+            return res;
+        }
+
+        GGML_ASSERT(dynamic_cast<server_task_result_get_cvec*>(result.get()) != nullptr);
         res->ok(result->to_json());
         return res;
     };
