@@ -1072,6 +1072,21 @@ struct common_control_vector_load_info {
 // On error, returns {-1, empty}
 common_control_vector_data common_control_vector_load(const std::vector<common_control_vector_load_info> & load_infos);
 
+// A control vector loaded once (unscaled) so its scale can be changed at runtime,
+// the cvec analog of common_adapter_lora_info.
+struct common_adapter_cvec_info {
+    std::string path;
+    float       scale = 0.0f;
+
+    common_control_vector_data data; // loaded once, unscaled
+};
+
+// Sum the given control vectors (each multiplied by its scale) and apply the
+// result to the context over the inclusive layer range [il_start, il_end]. An
+// empty or all-zero-scale set clears the control vector. Cheap to call every
+// batch: llama_set_adapter_cvec no-ops when the result is unchanged.
+void common_set_adapter_cvec(struct llama_context * ctx, const std::vector<common_adapter_cvec_info> & cvec, int32_t il_start, int32_t il_end);
+
 //
 // Split utils
 //

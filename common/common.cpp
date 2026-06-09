@@ -1979,6 +1979,34 @@ common_control_vector_data common_control_vector_load(const std::vector<common_c
     return result;
 }
 
+void common_set_adapter_cvec(struct llama_context * ctx, const std::vector<common_adapter_cvec_info> & cvecs, int32_t il_start, int32_t il_end) {
+    common_control_vector_data merged = { -1, {} };
+
+    for (const auto & cv : cvecs) {
+        if (cv.scale == 0.0f || cv.data.n_embd == -1) {
+            continue;
+        }
+        if (merged.n_embd == -1) {
+            merged.n_embd = cv.data.n_embd;
+        } else if (merged.n_embd != cv.data.n_embd) {
+            LOG_ERR("%s: control vector %s does not match previous dimensions, skipping\n", __func__, cv.path.c_str());
+            continue;
+        }
+        merged.data.resize(std::max(merged.data.size(), cv.data.data.size()), 0.0f);  // extend if necessary
+        for (size_t i = 0; i < cv.data.data.size(); i++) {
+            merged.data[i] += cv.data.data[i] * cv.scale;
+        }
+    }
+
+    if (merged.n_embd == -1) {
+        // nothing active -> clear the control vector
+        llama_set_adapter_cvec(ctx, nullptr, 0, 0, il_start, il_end);
+        return;
+    }
+
+    llama_set_adapter_cvec(ctx, merged.data.data(), merged.data.size(), merged.n_embd, il_start, il_end);
+}
+
 ggml_opt_dataset_t common_opt_dataset_init(struct llama_context * ctx, const std::vector<llama_token> & tokens, int64_t stride) {
     const int64_t ne_datapoint = llama_n_ctx(ctx);
     const int64_t ndata        = (tokens.size() - ne_datapoint - 1) / stride;

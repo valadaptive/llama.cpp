@@ -1315,11 +1315,49 @@ bool llama_context::set_adapter_cvec(
                 int32_t   il_end) {
     LLAMA_LOG_DEBUG("%s: il_start = %d, il_end = %d\n", __func__, il_start, il_end);
 
+    if (cvec_is_same(data, len, n_embd, il_start, il_end)) {
+        return true;
+    }
+
     bool res = cvec->apply(model, data, len, n_embd, il_start, il_end);
 
-    sched_need_reserve = true;
+    if (res) {
+        // remember what we applied for the dirty-check above
+        if (data == nullptr) {
+            cvec_data.clear();
+            cvec_n_embd = 0;
+        } else {
+            cvec_data.assign(data, data + len);
+            cvec_n_embd = n_embd;
+        }
+        cvec_il_start = il_start;
+        cvec_il_end   = il_end;
+
+        sched_need_reserve = true;
+    }
 
     return res;
+}
+
+bool llama_context::cvec_is_same(
+            const float * data,
+                 size_t   len,
+                int32_t   n_embd,
+                int32_t   il_start,
+                int32_t   il_end) const {
+    if (il_start != cvec_il_start || il_end != cvec_il_end) {
+        return false;
+    }
+
+    if (data == nullptr) {
+        return cvec_data.empty();
+    }
+
+    if (cvec_data.empty() || n_embd != cvec_n_embd || len != cvec_data.size()) {
+        return false;
+    }
+
+    return std::equal(data, data + len, cvec_data.begin());
 }
 
 llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, llm_graph_type gtype, llama_memory_context_i * mctx, ggml_status & ret) {
