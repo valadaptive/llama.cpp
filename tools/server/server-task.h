@@ -29,6 +29,7 @@ enum server_task_type {
     SERVER_TASK_TYPE_SET_LORA,
     SERVER_TASK_TYPE_GET_CVECTOR,
     SERVER_TASK_TYPE_SET_CVECTOR,
+    SERVER_TASK_TYPE_LOAD_CVECTOR,
 };
 
 // TODO: change this to more generic "response_format" to replace the "format_response_*" in server-common
@@ -181,6 +182,12 @@ struct server_task {
 
     // used by SERVER_TASK_TYPE_SET_CVECTOR
     std::map<int, float> set_cvec; // mapping control-vector ID -> scale
+
+    // used by SERVER_TASK_TYPE_LOAD_CVECTOR: load from a file path, or from
+    // in-memory data when load_cvec_data.n_embd != -1 (e.g. a freshly-trained vector)
+    std::string                load_cvec_path;
+    common_control_vector_data load_cvec_data { -1, {} };
+    float                      load_cvec_scale = 1.0f;
 
     server_task() = default;
 
