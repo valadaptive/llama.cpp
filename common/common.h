@@ -1016,20 +1016,25 @@ struct common_control_vector_load_info {
 // On error, returns {-1, empty}
 common_control_vector_data common_control_vector_load(const std::vector<common_control_vector_load_info> & load_infos);
 
-// A control vector loaded once (unscaled) so its scale can be changed at runtime,
-// the cvec analog of common_adapter_lora_info.
+// A control vector loaded once (unscaled) so its scale (and layer band) can be
+// changed at runtime, the cvec analog of common_adapter_lora_info. il_start /
+// il_end are the inclusive layer band this vector applies to; -1 means the full
+// range (1 .. n_layer), resolved by common_set_adapter_cvec.
 struct common_adapter_cvec_info {
     std::string path;
-    float       scale = 0.0f;
+    float       scale    = 0.0f;
+    int32_t     il_start = -1;
+    int32_t     il_end   = -1;
 
     common_control_vector_data data; // loaded once, unscaled
 };
 
-// Sum the given control vectors (each multiplied by its scale) and apply the
-// result to the context over the inclusive layer range [il_start, il_end]. An
+// Sum the given control vectors (each multiplied by its scale, masked to its own
+// [il_start, il_end] band) and apply the result to the context over the union of
+// those bands. n_layer resolves a -1 band to the full 1 .. n_layer range. An
 // empty or all-zero-scale set clears the control vector. Cheap to call every
 // batch: llama_set_adapter_cvec no-ops when the result is unchanged.
-void common_set_adapter_cvec(struct llama_context * ctx, const std::vector<common_adapter_cvec_info> & cvec, int32_t il_start, int32_t il_end);
+void common_set_adapter_cvec(struct llama_context * ctx, const std::vector<common_adapter_cvec_info> & cvec, int32_t n_layer);
 
 //
 // Split utils

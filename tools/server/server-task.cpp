@@ -2000,16 +2000,14 @@ json server_task_result_get_cvec::to_json() {
     json arr = json::array();
     for (size_t i = 0; i < cvecs.size(); ++i) {
         arr.push_back({
-            {"id",    i},
-            {"path",  cvecs[i].path},
-            {"scale", cvecs[i].scale},
+            {"id",          i},
+            {"path",        cvecs[i].path},
+            {"scale",       cvecs[i].scale},
+            {"layer_start", cvecs[i].il_start},
+            {"layer_end",   cvecs[i].il_end},
         });
     }
-    return json {
-        {"cvectors",    arr},
-        {"layer_start", il_start},
-        {"layer_end",   il_end},
-    };
+    return json {{ "cvectors", arr }};
 }
 
 //

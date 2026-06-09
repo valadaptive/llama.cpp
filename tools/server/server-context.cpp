@@ -797,11 +797,10 @@ private:
 
     common_speculative_ptr spec;
 
-    // control vectors loaded once (unscaled) so their scales can be tuned at
-    // runtime; cvec is context-global, so this state is server-wide (not per-slot)
+    // control vectors loaded once (unscaled) so their scale and band can be tuned
+    // at runtime; cvec is context-global, so this state is server-wide (not
+    // per-slot). Each vector carries its own layer band (info.il_start/il_end).
     std::vector<common_adapter_cvec_info> cvec_adapters;
-    int32_t cvec_il_start = -1;
-    int32_t cvec_il_end   = -1;
 
     bool add_bos_token = true;
 
@@ -1012,14 +1011,15 @@ private:
         // has already applied them at load; we retain the per-file data so SET_CVECTOR can
         // re-sum with new scales. cvec is context-global, hence one server-wide list.
         if (!params_base.control_vectors.empty()) {
-            cvec_il_start = params_base.control_vector_layer_start > 0 ? params_base.control_vector_layer_start : 1;
-            cvec_il_end   = params_base.control_vector_layer_end   > 0 ? params_base.control_vector_layer_end   : llama_model_n_layer(model_tgt);
-
+            // the CLI --control-vector-layer-range is a single global band shared
+            // by all launch-loaded vectors (-1 = full range, resolved at apply)
             for (const auto & info : params_base.control_vectors) {
                 common_adapter_cvec_info ci;
-                ci.path  = info.fname;
-                ci.scale = info.strength;
-                ci.data  = common_control_vector_load({{ 1.0f, info.fname }}); // load unscaled
+                ci.path     = info.fname;
+                ci.scale    = info.strength;
+                ci.il_start = params_base.control_vector_layer_start;
+                ci.il_end   = params_base.control_vector_layer_end;
+                ci.data     = common_control_vector_load({{ 1.0f, info.fname }}); // load unscaled
                 if (ci.data.n_embd == -1) {
                     SRV_ERR("failed to load control vector '%s'\n", info.fname.c_str());
                     return false;
@@ -1549,12 +1549,26 @@ private:
     }
 
     std::vector<common_adapter_cvec_info> construct_cvec_list(const std::map<int, float> & config) const {
-        std::vector<common_adapter_cvec_info> output = cvec_adapters; // copy the base set
+        std::vector<common_adapter_cvec_info> output = cvec_adapters; // copy the base set (keeps each band)
         for (size_t i = 0; i < output.size(); ++i) {
             auto it = config.find(i);
             output[i].scale = (it != config.end()) ? it->second : 0.0f;
         }
         return output;
+    }
+
+    // fill a get-cvec result from the base set, resolving each -1 band to the full
+    // 1 .. n_layer range so clients see concrete numbers
+    void fill_cvec_result(server_task_result_get_cvec & res) const {
+        const int n_layer = llama_model_n_layer(model_tgt);
+        for (const auto & cv : cvec_adapters) {
+            res.cvecs.push_back({
+                cv.path,
+                cv.scale,
+                cv.il_start > 0 ? cv.il_start : 1,
+                cv.il_end   > 0 ? cv.il_end   : n_layer,
+            });
+        }
     }
 
     bool launch_slot_with_task(server_slot & slot, server_task && task) {
@@ -2531,23 +2545,24 @@ private:
             case SERVER_TASK_TYPE_GET_CVECTOR:
                 {
                     auto res = std::make_unique<server_task_result_get_cvec>();
-                    res->id       = task.id;
-                    res->il_start = cvec_il_start;
-                    res->il_end   = cvec_il_end;
-                    for (auto & cv : cvec_adapters) {
-                        res->cvecs.push_back({ cv.path, cv.scale });
-                    }
+                    res->id = task.id;
+                    fill_cvec_result(*res);
                     queue_results.send(std::move(res));
                 } break;
             case SERVER_TASK_TYPE_SET_CVECTOR:
                 {
-                    for (const auto & [id, scale] : task.set_cvec) {
-                        if (id >= 0 && id < (int) cvec_adapters.size()) {
-                            cvec_adapters[id].scale = scale;
-                            SRV_INF("set control vector idx=%d scale=%f\n", id, scale);
+                    for (const auto & e : task.set_cvec) {
+                        if (e.id >= 0 && e.id < (int) cvec_adapters.size()) {
+                            cvec_adapters[e.id].scale = e.scale;
+                            if (e.has_range) {
+                                cvec_adapters[e.id].il_start = e.il_start;
+                                cvec_adapters[e.id].il_end   = e.il_end;
+                            }
+                            SRV_INF("set control vector idx=%d scale=%f band=[%d,%d]\n",
+                                    e.id, e.scale, cvec_adapters[e.id].il_start, cvec_adapters[e.id].il_end);
                         }
                     }
-                    // the new scales are re-applied on the next batch via common_set_adapter_cvec
+                    // the new config is re-applied on the next batch via common_set_adapter_cvec
                     auto res = std::make_unique<server_task_result_apply_cvec>();
                     res->id = task.id;
                     queue_results.send(std::move(res));
@@ -2570,27 +2585,20 @@ private:
 
                     const std::string label = task.load_cvec_path.empty() ? "(in-memory)" : task.load_cvec_path;
                     common_adapter_cvec_info ci;
-                    ci.path  = label;
-                    ci.scale = task.load_cvec_scale;
-                    ci.data  = std::move(data);
+                    ci.path     = label;
+                    ci.scale    = task.load_cvec_scale;
+                    ci.il_start = task.load_cvec_il_start;
+                    ci.il_end   = task.load_cvec_il_end;
+                    ci.data     = std::move(data);
                     cvec_adapters.push_back(std::move(ci));
 
-                    // first vector loaded (none at launch): resolve the full layer range
-                    if (cvec_il_start < 0) {
-                        cvec_il_start = 1;
-                        cvec_il_end   = llama_model_n_layer(model_tgt);
-                    }
-                    SRV_INF("loaded control vector idx=%d scale=%f from %s\n",
-                            (int) cvec_adapters.size() - 1, task.load_cvec_scale, label.c_str());
+                    SRV_INF("loaded control vector idx=%d scale=%f band=[%d,%d] from %s\n",
+                            (int) cvec_adapters.size() - 1, ci.scale, ci.il_start, ci.il_end, label.c_str());
 
                     // return the updated list
                     auto res = std::make_unique<server_task_result_get_cvec>();
-                    res->id       = task.id;
-                    res->il_start = cvec_il_start;
-                    res->il_end   = cvec_il_end;
-                    for (auto & cv : cvec_adapters) {
-                        res->cvecs.push_back({ cv.path, cv.scale });
-                    }
+                    res->id = task.id;
+                    fill_cvec_result(*res);
                     queue_results.send(std::move(res));
                 } break;
         }
@@ -3378,7 +3386,7 @@ private:
             // apply control vector(s) for this batch. can_batch_with guarantees a
             // homogeneous cvec across the batch, so the representative slot's is
             // correct for all. Cheap to call repeatedly: it no-ops when unchanged.
-            common_set_adapter_cvec(ctx_tgt, slot_batched->cvec, cvec_il_start, cvec_il_end);
+            common_set_adapter_cvec(ctx_tgt, slot_batched->cvec, llama_model_n_layer(model_tgt));
 
             // if the lora is temporarily disabled for an alora, re-enable it
             // for next time
@@ -4988,7 +4996,17 @@ void server_routes::init_routes() {
         {
             server_task task(SERVER_TASK_TYPE_SET_CVECTOR);
             task.id = rd.get_new_id();
-            task.set_cvec = parse_cvector_request(body);
+            for (const auto & entry : body) {
+                server_task::cvec_set_entry e;
+                e.id    = entry.value("id", -1);
+                e.scale = entry.value("scale", 0.0f);
+                if (entry.contains("layer_start") || entry.contains("layer_end")) {
+                    e.has_range = true;
+                    e.il_start  = entry.value("layer_start", -1);
+                    e.il_end    = entry.value("layer_end", -1);
+                }
+                task.set_cvec.push_back(e);
+            }
             rd.post_task(std::move(task));
         }
 
@@ -5019,9 +5037,11 @@ void server_routes::init_routes() {
         auto & rd = res->rd;
         {
             server_task task(SERVER_TASK_TYPE_LOAD_CVECTOR);
-            task.id              = rd.get_new_id();
-            task.load_cvec_path  = body.at("path").get<std::string>();
-            task.load_cvec_scale = body.value("scale", 1.0f);
+            task.id                 = rd.get_new_id();
+            task.load_cvec_path     = body.at("path").get<std::string>();
+            task.load_cvec_scale    = body.value("scale", 1.0f);
+            task.load_cvec_il_start = body.value("layer_start", -1);
+            task.load_cvec_il_end   = body.value("layer_end", -1);
             rd.post_task(std::move(task));
         }
 

@@ -1900,32 +1900,58 @@ common_control_vector_data common_control_vector_load(const std::vector<common_c
     return result;
 }
 
-void common_set_adapter_cvec(struct llama_context * ctx, const std::vector<common_adapter_cvec_info> & cvecs, int32_t il_start, int32_t il_end) {
-    common_control_vector_data merged = { -1, {} };
+void common_set_adapter_cvec(struct llama_context * ctx, const std::vector<common_adapter_cvec_info> & cvecs, int32_t n_layer) {
+    // first pass: n_embd + the union of the active vectors' bands
+    int n_embd      = -1;
+    int union_start = INT32_MAX;
+    int union_end   = -1;
+
+    auto resolve = [&](const common_adapter_cvec_info & cv, int & s, int & e) {
+        s = cv.il_start > 0 ? cv.il_start : 1;
+        e = cv.il_end   > 0 ? cv.il_end   : n_layer;
+    };
 
     for (const auto & cv : cvecs) {
         if (cv.scale == 0.0f || cv.data.n_embd == -1) {
             continue;
         }
-        if (merged.n_embd == -1) {
-            merged.n_embd = cv.data.n_embd;
-        } else if (merged.n_embd != cv.data.n_embd) {
+        if (n_embd == -1) {
+            n_embd = cv.data.n_embd;
+        } else if (n_embd != cv.data.n_embd) {
             LOG_ERR("%s: control vector %s does not match previous dimensions, skipping\n", __func__, cv.path.c_str());
             continue;
         }
-        merged.data.resize(std::max(merged.data.size(), cv.data.data.size()), 0.0f);  // extend if necessary
-        for (size_t i = 0; i < cv.data.data.size(); i++) {
-            merged.data[i] += cv.data.data[i] * cv.scale;
-        }
+        int s, e;
+        resolve(cv, s, e);
+        union_start = std::min(union_start, s);
+        union_end   = std::max(union_end, e);
     }
 
-    if (merged.n_embd == -1) {
+    if (n_embd == -1 || union_end < union_start) {
         // nothing active -> clear the control vector
-        llama_set_adapter_cvec(ctx, nullptr, 0, 0, il_start, il_end);
+        llama_set_adapter_cvec(ctx, nullptr, 0, 0, -1, -1);
         return;
     }
 
-    llama_set_adapter_cvec(ctx, merged.data.data(), merged.data.size(), merged.n_embd, il_start, il_end);
+    // second pass: each vector contributes only within its own band
+    std::vector<float> merged((size_t) n_embd * union_end, 0.0f);
+    for (const auto & cv : cvecs) {
+        if (cv.scale == 0.0f || cv.data.n_embd != n_embd) {
+            continue;
+        }
+        int s, e;
+        resolve(cv, s, e);
+        const int avail = (int) (cv.data.data.size() / n_embd); // layers present in this vector
+        for (int il = s; il <= e && il <= avail; il++) {
+            const float * src = cv.data.data.data() + (size_t) n_embd * (il - 1);
+            float       * dst = merged.data()       + (size_t) n_embd * (il - 1);
+            for (int j = 0; j < n_embd; j++) {
+                dst[j] += src[j] * cv.scale;
+            }
+        }
+    }
+
+    llama_set_adapter_cvec(ctx, merged.data(), merged.size(), n_embd, union_start, union_end);
 }
 
 ggml_opt_dataset_t common_opt_dataset_init(struct llama_context * ctx, const std::vector<llama_token> & tokens, int64_t stride) {
