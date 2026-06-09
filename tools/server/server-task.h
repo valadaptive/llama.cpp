@@ -30,6 +30,7 @@ enum server_task_type {
     SERVER_TASK_TYPE_GET_CVECTOR,
     SERVER_TASK_TYPE_SET_CVECTOR,
     SERVER_TASK_TYPE_LOAD_CVECTOR,
+    SERVER_TASK_TYPE_EXTRACT_HIDDENS,
 };
 
 // TODO: change this to more generic "response_format" to replace the "format_response_*" in server-common
@@ -196,6 +197,11 @@ struct server_task {
     float                      load_cvec_scale    = 1.0f;
     int32_t                    load_cvec_il_start = -1;
     int32_t                    load_cvec_il_end   = -1;
+
+    // used by SERVER_TASK_TYPE_EXTRACT_HIDDENS: forward each tokenized example and
+    // capture the per-layer residual (l_out), pooled over tokens
+    std::vector<llama_tokens> extract_seqs;
+    int                       extract_pool = 0; // 0 = mean over tokens, 1 = last token
 
     server_task() = default;
 
@@ -623,6 +629,21 @@ struct server_task_result_get_cvec : server_task_result {
 
 struct server_task_result_apply_cvec : server_task_result {
     virtual json to_json() override;
+};
+
+struct server_task_result_extract_hiddens : server_task_result {
+    int n_examples = 0;
+    int n_layers   = 0;
+    int n_embd     = 0;
+    std::vector<float> data; // [n_examples][n_layers][n_embd], flattened; consumed in-process
+
+    virtual json to_json() override {
+        return json {
+            { "n_examples", n_examples },
+            { "n_layers",   n_layers   },
+            { "n_embd",     n_embd     },
+        };
+    }
 };
 
 struct server_prompt_data {

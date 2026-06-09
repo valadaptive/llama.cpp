@@ -9,6 +9,8 @@
 #include "common.h"
 #include "fit.h"
 #include "llama.h"
+#include "ggml.h"
+#include "ggml-backend.h"
 #include "log.h"
 #include "sampling.h"
 #include "speculative.h"
@@ -22,6 +24,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <cstring>
 #include <cinttypes>
 #include <exception>
 #include <memory>
@@ -41,6 +44,50 @@
 using json = nlohmann::ordered_json;
 
 constexpr int HTTP_POLLING_SECONDS = 1;
+
+namespace {
+
+// Capture context for SERVER_TASK_TYPE_EXTRACT_HIDDENS. The eval callback pools
+// each layer's l_out (residual stream) over the current example's tokens, the
+// same mechanism cvector-generator uses.
+struct hidden_capture {
+    int n_tokens = 0;
+    int n_embd   = 0;
+    int pool     = 0; // 0 = mean over tokens, 1 = last token
+    std::vector<std::vector<float>> layers; // one pooled [n_embd] per matching l_out
+};
+
+bool extract_hiddens_cb(ggml_tensor * t, bool ask, void * user_data) {
+    auto * cap = (hidden_capture *) user_data;
+    const bool is_l_out = std::strncmp(t->name, "l_out", 5) == 0;
+    if (ask) {
+        return is_l_out; // only interested in the per-layer residual
+    }
+    if (!is_l_out || t->ne[1] != cap->n_tokens) {
+        return true;
+    }
+    const int n_embd = (int) t->ne[0];
+    const int n_tok  = (int) t->ne[1];
+    std::vector<float> buf((size_t) n_embd * n_tok);
+    ggml_backend_tensor_get(t, buf.data(), 0, ggml_nbytes(t));
+
+    std::vector<float> pooled(n_embd, 0.0f);
+    if (cap->pool == 1) {
+        const float * col = buf.data() + (size_t) n_embd * (n_tok - 1);
+        for (int j = 0; j < n_embd; j++) { pooled[j] = col[j]; }
+    } else {
+        for (int it = 0; it < n_tok; it++) {
+            const float * col = buf.data() + (size_t) n_embd * it;
+            for (int j = 0; j < n_embd; j++) { pooled[j] += col[j]; }
+        }
+        for (int j = 0; j < n_embd; j++) { pooled[j] /= (float) n_tok; }
+    }
+    cap->n_embd = n_embd;
+    cap->layers.push_back(std::move(pooled));
+    return true;
+}
+
+} // namespace
 
 static uint32_t server_n_outputs_max(const common_params & params) {
     const uint32_t n_batch  = params.n_batch;
@@ -2599,6 +2646,63 @@ private:
                     auto res = std::make_unique<server_task_result_get_cvec>();
                     res->id = task.id;
                     fill_cvec_result(*res);
+                    queue_results.send(std::move(res));
+                } break;
+            case SERVER_TASK_TYPE_EXTRACT_HIDDENS:
+                {
+                    // forward each example and capture per-layer pooled residuals.
+                    // requires the engine idle: we clear the KV cache between passes.
+                    bool busy = false;
+                    for (auto & slot : slots) { if (slot.is_processing()) { busy = true; break; } }
+                    if (busy) {
+                        send_error(task, "cannot extract hidden states while the engine is processing", ERROR_TYPE_INVALID_REQUEST);
+                        break;
+                    }
+                    if (task.extract_seqs.empty()) {
+                        send_error(task, "no examples to extract", ERROR_TYPE_INVALID_REQUEST);
+                        break;
+                    }
+
+                    auto res = std::make_unique<server_task_result_extract_hiddens>();
+                    res->id         = task.id;
+                    res->n_examples = (int) task.extract_seqs.size();
+
+                    hidden_capture cap;
+                    cap.pool = task.extract_pool;
+                    llama_set_eval_callback(ctx_tgt, extract_hiddens_cb, &cap);
+
+                    bool ok = true;
+                    for (size_t ex = 0; ex < task.extract_seqs.size() && ok; ex++) {
+                        std::vector<llama_token> toks = task.extract_seqs[ex]; // copy: batch needs a mutable ptr
+                        if (toks.empty()) { ok = false; break; }
+                        llama_memory_clear(llama_get_memory(ctx_tgt), true);
+                        cap.n_tokens = (int) toks.size();
+                        cap.layers.clear();
+                        if (llama_decode(ctx_tgt, llama_batch_get_one(toks.data(), (int32_t) toks.size())) != 0) {
+                            ok = false;
+                            break;
+                        }
+                        if (res->n_layers == 0) {
+                            res->n_layers = (int) cap.layers.size();
+                            res->n_embd   = cap.n_embd;
+                            res->data.assign((size_t) res->n_examples * res->n_layers * res->n_embd, 0.0f);
+                        }
+                        if ((int) cap.layers.size() != res->n_layers) { ok = false; break; }
+                        for (int il = 0; il < res->n_layers; il++) {
+                            float * dst = res->data.data() + ((size_t) ex * res->n_layers + il) * res->n_embd;
+                            std::copy(cap.layers[il].begin(), cap.layers[il].end(), dst);
+                        }
+                    }
+
+                    llama_set_eval_callback(ctx_tgt, nullptr, nullptr);
+                    // the forward passes wiped the KV cache; invalidate slot prompt caches
+                    llama_memory_clear(llama_get_memory(ctx_tgt), true);
+                    for (auto & slot : slots) { slot.prompt.tokens.clear(); }
+
+                    if (!ok) {
+                        send_error(task, "hidden-state extraction failed (check example lengths vs context size)", ERROR_TYPE_SERVER);
+                        break;
+                    }
                     queue_results.send(std::move(res));
                 } break;
         }
