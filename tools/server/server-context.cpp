@@ -794,6 +794,12 @@ private:
 
     common_speculative_ptr spec;
 
+    // control vectors loaded once (unscaled) so their scales can be tuned at
+    // runtime; cvec is context-global, so this state is server-wide (not per-slot)
+    std::vector<common_adapter_cvec_info> cvec_adapters;
+    int32_t cvec_il_start = -1;
+    int32_t cvec_il_end   = -1;
+
     bool add_bos_token = true;
 
     int32_t n_ctx; // total context for all clients / slots
@@ -998,6 +1004,26 @@ private:
         n_ctx = llama_n_ctx(ctx_tgt);
 
         add_bos_token = llama_vocab_get_add_bos(vocab);
+
+        // keep control vectors loaded (unscaled) for runtime scaling. common_init_from_params
+        // has already applied them at load; we retain the per-file data so SET_CVECTOR can
+        // re-sum with new scales. cvec is context-global, hence one server-wide list.
+        if (!params_base.control_vectors.empty()) {
+            cvec_il_start = params_base.control_vector_layer_start > 0 ? params_base.control_vector_layer_start : 1;
+            cvec_il_end   = params_base.control_vector_layer_end   > 0 ? params_base.control_vector_layer_end   : llama_model_n_layer(model_tgt);
+
+            for (const auto & info : params_base.control_vectors) {
+                common_adapter_cvec_info ci;
+                ci.path  = info.fname;
+                ci.scale = info.strength;
+                ci.data  = common_control_vector_load({{ 1.0f, info.fname }}); // load unscaled
+                if (ci.data.n_embd == -1) {
+                    SRV_ERR("failed to load control vector '%s'\n", info.fname.c_str());
+                    return false;
+                }
+                cvec_adapters.push_back(std::move(ci));
+            }
+        }
 
         if (params_base.speculative.has_dft()) {
             // TODO speculative: move to common/speculative.cpp?
@@ -2476,6 +2502,30 @@ private:
                     res->id = task.id;
                     queue_results.send(std::move(res));
                 } break;
+            case SERVER_TASK_TYPE_GET_CVECTOR:
+                {
+                    auto res = std::make_unique<server_task_result_get_cvec>();
+                    res->id       = task.id;
+                    res->il_start = cvec_il_start;
+                    res->il_end   = cvec_il_end;
+                    for (auto & cv : cvec_adapters) {
+                        res->cvecs.push_back({ cv.path, cv.scale });
+                    }
+                    queue_results.send(std::move(res));
+                } break;
+            case SERVER_TASK_TYPE_SET_CVECTOR:
+                {
+                    for (const auto & [id, scale] : task.set_cvec) {
+                        if (id >= 0 && id < (int) cvec_adapters.size()) {
+                            cvec_adapters[id].scale = scale;
+                            SRV_INF("set control vector idx=%d scale=%f\n", id, scale);
+                        }
+                    }
+                    // the new scales are re-applied on the next batch via common_set_adapter_cvec
+                    auto res = std::make_unique<server_task_result_apply_cvec>();
+                    res->id = task.id;
+                    queue_results.send(std::move(res));
+                } break;
         }
     }
 
@@ -3257,6 +3307,10 @@ private:
         if (slot_batched) {
             // apply lora, only need to do it once per batch
             common_set_adapter_lora(ctx_tgt, slot_batched->lora);
+
+            // apply control vector(s); context-global, so the same for every batch.
+            // cheap to call repeatedly: it no-ops when the summed result is unchanged
+            common_set_adapter_cvec(ctx_tgt, cvec_adapters, cvec_il_start, cvec_il_end);
 
             // if the lora is temporarily disabled for an alora, re-enable it
             // for next time

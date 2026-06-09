@@ -1983,6 +1983,34 @@ json server_task_result_apply_lora::to_json() {
 }
 
 //
+// server_task_result_get_cvec
+//
+
+json server_task_result_get_cvec::to_json() {
+    json arr = json::array();
+    for (size_t i = 0; i < cvecs.size(); ++i) {
+        arr.push_back({
+            {"id",    i},
+            {"path",  cvecs[i].path},
+            {"scale", cvecs[i].scale},
+        });
+    }
+    return json {
+        {"cvectors",    arr},
+        {"layer_start", il_start},
+        {"layer_end",   il_end},
+    };
+}
+
+//
+// server_task_result_apply_cvec
+//
+
+json server_task_result_apply_cvec::to_json() {
+    return json {{ "success", true }};
+}
+
+//
 // server_prompt_cache
 //
 size_t server_prompt_cache::size() const {
