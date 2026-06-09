@@ -183,6 +183,7 @@ struct server_slot {
     }
 
     std::vector<common_adapter_lora_info> lora;
+    std::vector<common_adapter_cvec_info> cvec;
     int32_t alora_invocation_start = -1;
 
     // sampling
@@ -303,7 +304,9 @@ struct server_slot {
     bool can_batch_with(server_slot & other_slot) const {
         GGML_ASSERT(task);
 
-        return task->type == other_slot.task->type && are_lora_equal(lora, other_slot.lora);
+        return task->type == other_slot.task->type
+            && are_lora_equal(lora, other_slot.lora)
+            && are_cvec_equal(cvec, other_slot.cvec);
     }
 
     bool has_budget(const common_params & global_params) {
@@ -1545,6 +1548,15 @@ private:
         return output;
     }
 
+    std::vector<common_adapter_cvec_info> construct_cvec_list(const std::map<int, float> & config) const {
+        std::vector<common_adapter_cvec_info> output = cvec_adapters; // copy the base set
+        for (size_t i = 0; i < output.size(); ++i) {
+            auto it = config.find(i);
+            output[i].scale = (it != config.end()) ? it->second : 0.0f;
+        }
+        return output;
+    }
+
     bool launch_slot_with_task(server_slot & slot, server_task && task) {
         // process per-request lora adapters
         if (!task.params.lora.empty()) {
@@ -1561,6 +1573,20 @@ private:
             }
         } else {
             slot.lora = params_base.lora_adapters;
+        }
+
+        // process per-request control vectors. cvec is context-global, so a change
+        // invalidates the slot's cached prompt: prior K/V were computed under a
+        // different vector (no alora-style exemption applies).
+        {
+            auto task_cvec = task.params.cvector.empty()
+                ? cvec_adapters
+                : construct_cvec_list(task.params.cvector);
+            if (!are_cvec_equal(task_cvec, slot.cvec)) {
+                SLT_TRC(slot, "clearing cache for control-vector change (%zu vectors)\n", task_cvec.size());
+                slot.prompt.tokens.clear();
+                slot.cvec = std::move(task_cvec);
+            }
         }
 
         // if using alora, make sure it's only a single one requested and active
@@ -3308,9 +3334,10 @@ private:
             // apply lora, only need to do it once per batch
             common_set_adapter_lora(ctx_tgt, slot_batched->lora);
 
-            // apply control vector(s); context-global, so the same for every batch.
-            // cheap to call repeatedly: it no-ops when the summed result is unchanged
-            common_set_adapter_cvec(ctx_tgt, cvec_adapters, cvec_il_start, cvec_il_end);
+            // apply control vector(s) for this batch. can_batch_with guarantees a
+            // homogeneous cvec across the batch, so the representative slot's is
+            // correct for all. Cheap to call repeatedly: it no-ops when unchanged.
+            common_set_adapter_cvec(ctx_tgt, slot_batched->cvec, cvec_il_start, cvec_il_end);
 
             // if the lora is temporarily disabled for an alora, re-enable it
             // for next time
@@ -4878,6 +4905,64 @@ void server_routes::init_routes() {
         }
 
         GGML_ASSERT(dynamic_cast<server_task_result_apply_lora*>(result.get()) != nullptr);
+        res->ok(result->to_json());
+        return res;
+    };
+
+    this->get_cvectors = [this](const server_http_req & req) {
+        auto res = create_response();
+
+        auto & rd = res->rd;
+        {
+            server_task task(SERVER_TASK_TYPE_GET_CVECTOR);
+            task.id = rd.get_new_id();
+            rd.post_task(std::move(task));
+        }
+
+        auto result = rd.next(req.should_stop);
+        if (!result) {
+            GGML_ASSERT(req.should_stop());
+            return res;
+        }
+
+        if (result->is_error()) {
+            res->error(result->to_json());
+            return res;
+        }
+
+        GGML_ASSERT(dynamic_cast<server_task_result_get_cvec*>(result.get()) != nullptr);
+        res->ok(result->to_json());
+        return res;
+    };
+
+    this->post_cvectors = [this](const server_http_req & req) {
+        auto res = create_response();
+        const json body = json::parse(req.body);
+        if (!body.is_array()) {
+            res->error(format_error_response("Request body must be an array", ERROR_TYPE_INVALID_REQUEST));
+            return res;
+        }
+
+        auto & rd = res->rd;
+        {
+            server_task task(SERVER_TASK_TYPE_SET_CVECTOR);
+            task.id = rd.get_new_id();
+            task.set_cvec = parse_cvector_request(body);
+            rd.post_task(std::move(task));
+        }
+
+        auto result = rd.next(req.should_stop);
+        if (!result) {
+            GGML_ASSERT(req.should_stop());
+            return res;
+        }
+
+        if (result->is_error()) {
+            res->error(result->to_json());
+            return res;
+        }
+
+        GGML_ASSERT(dynamic_cast<server_task_result_apply_cvec*>(result.get()) != nullptr);
         res->ok(result->to_json());
         return res;
     };

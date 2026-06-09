@@ -345,6 +345,16 @@ task_params server_task::params_from_json_cmpl(
         params.lora = {};
     }
 
+    if (data.contains("cvector")) {
+        if (data.at("cvector").is_array()) {
+            params.cvector = parse_cvector_request(data.at("cvector"));
+        } else {
+            throw std::runtime_error("Error: 'cvector' must be an array of objects with 'id' and 'scale' fields");
+        }
+    } else {
+        params.cvector = {};
+    }
+
     // TODO: add more sanity checks for the input parameters
 
     if (params.sampling.penalty_last_n < -1) {
