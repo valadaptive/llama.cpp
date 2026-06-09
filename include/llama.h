@@ -983,6 +983,13 @@ extern "C" {
     // n_threads_batch is the number of threads used for prompt and batch processing (multiple tokens)
     LLAMA_API void llama_set_n_threads(struct llama_context * ctx, int32_t n_threads, int32_t n_threads_batch);
 
+    // Set the per-graph-node evaluation callback (e.g. to capture hidden states).
+    // Takes effect on the next llama_decode; pass NULL to clear.
+    LLAMA_API void llama_set_eval_callback(
+            struct llama_context * ctx,
+            ggml_backend_sched_eval_callback cb_eval,
+            void * cb_eval_user_data);
+
     // Get the number of threads used for generation of a single token.
     LLAMA_API int32_t llama_n_threads(struct llama_context * ctx);
 
