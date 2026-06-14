@@ -170,6 +170,7 @@ int llama_server(int argc, char ** argv) {
         routes.get_cvectors                = models_routes->proxy_get;
         routes.post_cvectors               = models_routes->proxy_post;
         routes.post_cvectors_load          = models_routes->proxy_post;
+        routes.post_cvectors_remove        = models_routes->proxy_post;
         routes.get_slots                   = models_routes->proxy_get;
         routes.post_slots                  = models_routes->proxy_post;
 
@@ -223,6 +224,7 @@ int llama_server(int argc, char ** argv) {
     ctx_http.get ("/cvectors",                 ex_wrapper(routes.get_cvectors));
     ctx_http.post("/cvectors",                 ex_wrapper(routes.post_cvectors));
     ctx_http.post("/cvectors/load",            ex_wrapper(routes.post_cvectors_load));
+    ctx_http.post("/cvectors/remove",          ex_wrapper(routes.post_cvectors_remove));
     // Save & load slots
     ctx_http.get ("/slots",                    ex_wrapper(routes.get_slots));
     ctx_http.post("/slots/:id_slot",           ex_wrapper(routes.post_slots));

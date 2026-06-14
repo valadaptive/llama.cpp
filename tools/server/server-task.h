@@ -30,6 +30,7 @@ enum server_task_type {
     SERVER_TASK_TYPE_GET_CVECTOR,
     SERVER_TASK_TYPE_SET_CVECTOR,
     SERVER_TASK_TYPE_LOAD_CVECTOR,
+    SERVER_TASK_TYPE_REMOVE_CVECTOR,
     SERVER_TASK_TYPE_EXTRACT_HIDDENS,
 };
 
@@ -197,6 +198,9 @@ struct server_task {
     float                      load_cvec_scale    = 1.0f;
     int32_t                    load_cvec_il_start = -1;
     int32_t                    load_cvec_il_end   = -1;
+
+    // used by SERVER_TASK_TYPE_REMOVE_CVECTOR: index of the vector to unload.
+    int32_t                    remove_cvec_id = -1;
 
     // used by SERVER_TASK_TYPE_EXTRACT_HIDDENS: forward each tokenized example and
     // capture the per-layer residual (l_out), pooled over tokens
