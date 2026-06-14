@@ -60,7 +60,9 @@ bool extract_hiddens_cb(ggml_tensor * t, bool ask, void * user_data) {
     if (ask) {
         return is_l_out; // only interested in the per-layer residual
     }
-    if (!is_l_out || t->ne[1] != cap->n_tokens) {
+    // n_tokens < 0 means "capture every l_out decode" (multi-decode image walk);
+    // otherwise only the decode whose token count matches the single text example.
+    if (!is_l_out || (cap->n_tokens >= 0 && t->ne[1] != cap->n_tokens)) {
         return true;
     }
     const int n_embd = (int) t->ne[0];
@@ -2928,6 +2930,72 @@ private:
                         send_error(task, "cannot extract hidden states while the engine is processing", ERROR_TYPE_INVALID_REQUEST);
                         break;
                     }
+
+                    // --- image modality: run each image through mtmd, capture the
+                    //     post-image last-token residual (NOTES: pooling raw image
+                    //     tokens does not steer) ---
+                    if (!task.extract_images.empty()) {
+                        if (!mctx) {
+                            send_error(task, "image extraction requires a multimodal model (mmproj)", ERROR_TYPE_INVALID_REQUEST);
+                            break;
+                        }
+                        auto res = std::make_unique<server_task_result_extract_hiddens>();
+                        res->id         = task.id;
+                        res->n_examples = (int) task.extract_images.size();
+
+                        const int     n_layers_full = (int) llama_model_n_layer(model_tgt) - 1;
+                        const int32_t n_batch       = llama_n_batch(ctx_tgt);
+                        hidden_capture cap;
+                        cap.pool = 1;  // last token only
+                        llama_set_eval_callback(ctx_tgt, extract_hiddens_cb, &cap);
+
+                        bool ok = (n_layers_full > 0);
+                        for (size_t ex = 0; ex < task.extract_images.size() && ok; ex++) {
+                            const auto & bytes = task.extract_images[ex];
+                            mtmd::bitmaps bitmaps;
+                            mtmd::bitmap  bmp(mtmd_helper_bitmap_init_from_buf(mctx, bytes.data(), bytes.size(), false));
+                            if (!bmp.ptr) { ok = false; break; }
+                            bmp.set_id(std::to_string(ex).c_str());
+                            bitmaps.entries.push_back(std::move(bmp));
+
+                            mtmd_input_text it = { task.extract_mm_prompt.c_str(), /*add_special*/ true, /*parse_special*/ true };
+                            mtmd::input_chunks chunks(mtmd_input_chunks_init());
+                            auto bptr = bitmaps.c_ptr();
+                            if (mtmd_tokenize(mctx, chunks.ptr.get(), &it, bptr.data(), bptr.size()) != 0) { ok = false; break; }
+
+                            llama_memory_clear(llama_get_memory(ctx_tgt), true);
+                            cap.n_tokens = -1;  // capture every decode; we keep the last layer-block
+                            cap.layers.clear();
+                            llama_pos new_n_past = 0;
+                            if (mtmd_helper_eval_chunks(mctx, ctx_tgt, chunks.ptr.get(), 0, /*seq_id*/ 0,
+                                                        n_batch, /*logits_last*/ true, &new_n_past) != 0) { ok = false; break; }
+                            // the trailing text chunk (instruction) is the last decode; its
+                            // n_layers_full l_out entries are the post-image last-token residual.
+                            if ((int) cap.layers.size() < n_layers_full ||
+                                cap.layers.size() % (size_t) n_layers_full != 0) { ok = false; break; }
+                            if (res->n_layers == 0) {
+                                res->n_layers = n_layers_full;
+                                res->n_embd   = cap.n_embd;
+                                res->data.assign((size_t) res->n_examples * res->n_layers * res->n_embd, 0.0f);
+                            }
+                            const size_t off = cap.layers.size() - (size_t) n_layers_full;
+                            for (int il = 0; il < n_layers_full; il++) {
+                                float * dst = res->data.data() + ((size_t) ex * res->n_layers + il) * res->n_embd;
+                                std::copy(cap.layers[off + il].begin(), cap.layers[off + il].end(), dst);
+                            }
+                        }
+
+                        llama_set_eval_callback(ctx_tgt, nullptr, nullptr);
+                        llama_memory_clear(llama_get_memory(ctx_tgt), true);
+                        for (auto & slot : slots) { slot.prompt.tokens.clear(); }
+                        if (!ok) {
+                            send_error(task, "image hidden-state extraction failed (check the images and mmproj)", ERROR_TYPE_SERVER);
+                            break;
+                        }
+                        queue_results.send(std::move(res));
+                        break;
+                    }
+
                     if (task.extract_seqs.empty()) {
                         send_error(task, "no examples to extract", ERROR_TYPE_INVALID_REQUEST);
                         break;
