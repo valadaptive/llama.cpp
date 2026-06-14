@@ -3006,8 +3006,12 @@ private:
                     auto decode_image = [&](size_t ex) -> bool {
                         const auto & bytes = task.extract_images[ex];
                         mtmd::bitmaps bitmaps;
-                        mtmd::bitmap  bmp(mtmd_helper_bitmap_init_from_buf(mctx, bytes.data(), bytes.size(), false));
-                        if (!bmp.ptr) { return false; }
+                        // the helper now returns a wrapper carrying an optional video_ctx
+                        // (kept alive through eval below); for our image corpus it is null.
+                        auto out = mtmd_helper_bitmap_init_from_buf(mctx, bytes.data(), bytes.size(), false);
+                        if (!out.bitmap) { return false; }
+                        mtmd_helper::video_ptr video(out.video_ctx);
+                        mtmd::bitmap bmp(out.bitmap);
                         bmp.set_id(std::to_string(ex).c_str());
                         bitmaps.entries.push_back(std::move(bmp));
                         mtmd_input_text it = { task.extract_mm_prompt.c_str(), /*add_special*/ true, /*parse_special*/ true };
