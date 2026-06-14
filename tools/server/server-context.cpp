@@ -13,6 +13,7 @@
 #include "llama.h"
 #include "ggml.h"
 #include "ggml-backend.h"
+#include "gguf.h"
 #include "log.h"
 #include "sampling.h"
 #include "speculative.h"
@@ -99,6 +100,28 @@ bool extract_hiddens_cb(ggml_tensor * t, bool ask, void * user_data) {
     cap->n_embd = n_embd;
     cap->by_layer[idx] = std::move(pooled);  // overwrite: the last decode for this layer wins
     return true;
+}
+
+// Read the optional controlvector.layer_start/layer_end band that llama-ui's
+// trainer writes, so a saved vector reloads with its tuned band. Returns false
+// (leaving the args untouched) when the keys are absent, e.g. a stock GGUF.
+bool read_cvec_band(const std::string & path, int & il_start, int & il_end) {
+    if (path.empty()) { return false; }
+    gguf_init_params gp = { /*.no_alloc =*/ true, /*.ctx =*/ nullptr };
+    gguf_context * ctx = gguf_init_from_file(path.c_str(), gp);
+    if (!ctx) { return false; }
+    bool found = false;
+    const int64_t ks = gguf_find_key(ctx, "controlvector.layer_start");
+    const int64_t ke = gguf_find_key(ctx, "controlvector.layer_end");
+    if (ks >= 0 && ke >= 0 &&
+        gguf_get_kv_type(ctx, ks) == GGUF_TYPE_INT32 &&
+        gguf_get_kv_type(ctx, ke) == GGUF_TYPE_INT32) {
+        il_start = gguf_get_val_i32(ctx, ks);
+        il_end   = gguf_get_val_i32(ctx, ke);
+        found = true;
+    }
+    gguf_free(ctx);
+    return found;
 }
 
 } // namespace
@@ -2899,12 +2922,20 @@ private:
                         break;
                     }
 
+                    // honor an explicit band; otherwise fall back to the band saved
+                    // in the file (full range when neither is present)
+                    int il_start = task.load_cvec_il_start;
+                    int il_end   = task.load_cvec_il_end;
+                    if (il_start <= 0 && il_end <= 0) {
+                        read_cvec_band(task.load_cvec_path, il_start, il_end);
+                    }
+
                     const std::string label = task.load_cvec_path.empty() ? "(in-memory)" : task.load_cvec_path;
                     common_adapter_cvec_info ci;
                     ci.path     = label;
                     ci.scale    = task.load_cvec_scale;
-                    ci.il_start = task.load_cvec_il_start;
-                    ci.il_end   = task.load_cvec_il_end;
+                    ci.il_start = il_start;
+                    ci.il_end   = il_end;
                     ci.data     = std::move(data);
                     cvec_adapters.push_back(std::move(ci));
 
