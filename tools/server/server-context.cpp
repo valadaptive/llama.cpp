@@ -2900,6 +2900,24 @@ private:
                     fill_cvec_result(*res);
                     queue_results.send(std::move(res));
                 } break;
+            case SERVER_TASK_TYPE_REMOVE_CVECTOR:
+                {
+                    const int id = task.remove_cvec_id;
+                    if (id < 0 || id >= (int) cvec_adapters.size()) {
+                        send_error(task, "control vector index out of range", ERROR_TYPE_INVALID_REQUEST);
+                        break;
+                    }
+                    cvec_adapters.erase(cvec_adapters.begin() + id);
+                    SRV_INF("removed control vector idx=%d (%d remaining)\n", id, (int) cvec_adapters.size());
+
+                    // the shrunk set is re-applied on the next batch via common_set_adapter_cvec;
+                    // when the last vector is removed the merged buffer is empty and the cvec is cleared.
+                    // return the updated list (remaining vectors are renumbered by their new index)
+                    auto res = std::make_unique<server_task_result_get_cvec>();
+                    res->id = task.id;
+                    fill_cvec_result(*res);
+                    queue_results.send(std::move(res));
+                } break;
             case SERVER_TASK_TYPE_EXTRACT_HIDDENS:
                 {
                     // forward each example and capture per-layer pooled residuals.
@@ -5475,6 +5493,38 @@ void server_routes::init_routes() {
             task.load_cvec_scale    = body.value("scale", 1.0f);
             task.load_cvec_il_start = body.value("layer_start", -1);
             task.load_cvec_il_end   = body.value("layer_end", -1);
+            rd.post_task(std::move(task));
+        }
+
+        auto result = rd.next(req.should_stop);
+        if (!result) {
+            GGML_ASSERT(req.should_stop());
+            return res;
+        }
+
+        if (result->is_error()) {
+            res->error(result->to_json());
+            return res;
+        }
+
+        GGML_ASSERT(dynamic_cast<server_task_result_get_cvec*>(result.get()) != nullptr);
+        res->ok(result->to_json());
+        return res;
+    };
+
+    this->post_cvectors_remove = [this](const server_http_req & req) {
+        auto res = create_response();
+        const json body = json::parse(req.body);
+        if (!body.is_object() || !body.contains("id")) {
+            res->error(format_error_response("Request body must be an object with an 'id' field", ERROR_TYPE_INVALID_REQUEST));
+            return res;
+        }
+
+        auto & rd = res->rd;
+        {
+            server_task task(SERVER_TASK_TYPE_REMOVE_CVECTOR);
+            task.id             = rd.get_new_id();
+            task.remove_cvec_id = body.at("id").get<int>();
             rd.post_task(std::move(task));
         }
 
