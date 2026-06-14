@@ -51,10 +51,16 @@ namespace {
 // each layer's l_out (residual stream) over the current example's tokens, the
 // same mechanism cvector-generator uses.
 struct hidden_capture {
-    int n_tokens = 0;
+    int n_tokens = 0;  // text: capture only decodes with this token count; <0 = image path
     int n_embd   = 0;
-    int pool     = 0; // 0 = mean over tokens, 1 = last token
-    std::vector<std::vector<float>> layers; // one pooled [n_embd] per matching l_out
+    int pool     = 0;  // 0 = mean over tokens, 1 = last token
+    // text path: one pooled [n_embd] appended per matching l_out (single decode).
+    std::vector<std::vector<float>> layers;
+    // image path (multi-decode): pooled [n_embd] keyed by layer index, overwritten
+    // each decode so the final (post-image) decode wins. Only indices < n_layer_keep
+    // are kept (excludes the final logits-output l_out, matching the text layer set).
+    int n_layer_keep = 0;
+    std::map<int, std::vector<float>> by_layer;
 };
 
 bool extract_hiddens_cb(ggml_tensor * t, bool ask, void * user_data) {
@@ -66,6 +72,16 @@ bool extract_hiddens_cb(ggml_tensor * t, bool ask, void * user_data) {
     // n_tokens < 0 means "capture every l_out decode" (multi-decode image walk);
     // otherwise only the decode whose token count matches the single text example.
     if (!is_l_out || (cap->n_tokens >= 0 && t->ne[1] != cap->n_tokens)) {
+        return true;
+    }
+    // only the genuine per-token residual: a contiguous F32 [n_embd, n_tok] matrix
+    // with at least one token. The image walk fires on every "l_out*" node,
+    // including the final-norm output, which on a prefill chunk can have ne[1]==0
+    // (no output positions) -- capturing that underflows last-token pooling. The
+    // text path's ne[1]==n_tokens filter excluded it implicitly; the image walk
+    // (n_tokens<0) must guard explicitly.
+    if (t->type != GGML_TYPE_F32 || t->ne[0] <= 0 || t->ne[1] <= 0 ||
+        t->ne[2] != 1 || t->ne[3] != 1 || !ggml_is_contiguous(t)) {
         return true;
     }
     const int n_embd = (int) t->ne[0];
@@ -85,7 +101,16 @@ bool extract_hiddens_cb(ggml_tensor * t, bool ask, void * user_data) {
         for (int j = 0; j < n_embd; j++) { pooled[j] /= (float) n_tok; }
     }
     cap->n_embd = n_embd;
-    cap->layers.push_back(std::move(pooled));
+    if (cap->n_tokens < 0) {
+        // image path: key by the layer index parsed from "l_out-N", overwriting so
+        // the last (post-image) decode wins. Skip the final logits-output layer.
+        int idx = -1;
+        if (t->name[5] == '-') { idx = atoi(t->name + 6); }
+        if (idx < 0 || idx >= cap->n_layer_keep) { return true; }
+        cap->by_layer[idx] = std::move(pooled);
+    } else {
+        cap->layers.push_back(std::move(pooled));
+    }
     return true;
 }
 
@@ -2688,57 +2713,76 @@ private:
                             break;
                         }
                         auto res = std::make_unique<server_task_result_extract_hiddens>();
-                        res->id         = task.id;
-                        res->n_examples = (int) task.extract_images.size();
+                        res->id = task.id;
 
                         const int     n_layers_full = (int) llama_model_n_layer(model_tgt) - 1;
                         const int32_t n_batch       = llama_n_batch(ctx_tgt);
                         hidden_capture cap;
-                        cap.pool = 1;  // last token only
+                        cap.pool         = 1;             // last token only
+                        cap.n_tokens     = -1;            // image path: key captures by layer index
+                        cap.n_layer_keep = n_layers_full; // keep layers 0..n_layers_full-1 (exclude logits layer)
                         llama_set_eval_callback(ctx_tgt, extract_hiddens_cb, &cap);
 
-                        bool ok = (n_layers_full > 0);
-                        for (size_t ex = 0; ex < task.extract_images.size() && ok; ex++) {
+                        // a single undecodable / failing image must not abort the whole run:
+                        // skip it (with a warning) and keep its peers. Each kept example is a
+                        // flat [n_layers_full * n_embd] block; assemble the result at the end.
+                        std::vector<std::vector<float>> kept;
+                        int n_embd_seen = 0, n_skipped = 0;
+                        for (size_t ex = 0; n_layers_full > 0 && ex < task.extract_images.size(); ex++) {
                             const auto & bytes = task.extract_images[ex];
                             mtmd::bitmaps bitmaps;
                             mtmd::bitmap  bmp(mtmd_helper_bitmap_init_from_buf(mctx, bytes.data(), bytes.size(), false));
-                            if (!bmp.ptr) { ok = false; break; }
+                            if (!bmp.ptr) { SRV_WRN("extract: skipping undecodable image %zu\n", ex); n_skipped++; continue; }
                             bmp.set_id(std::to_string(ex).c_str());
                             bitmaps.entries.push_back(std::move(bmp));
 
                             mtmd_input_text it = { task.extract_mm_prompt.c_str(), /*add_special*/ true, /*parse_special*/ true };
                             mtmd::input_chunks chunks(mtmd_input_chunks_init());
                             auto bptr = bitmaps.c_ptr();
-                            if (mtmd_tokenize(mctx, chunks.ptr.get(), &it, bptr.data(), bptr.size()) != 0) { ok = false; break; }
+                            if (mtmd_tokenize(mctx, chunks.ptr.get(), &it, bptr.data(), bptr.size()) != 0) {
+                                SRV_WRN("extract: skipping image %zu (tokenize failed)\n", ex); n_skipped++; continue;
+                            }
 
                             llama_memory_clear(llama_get_memory(ctx_tgt), true);
-                            cap.n_tokens = -1;  // capture every decode; we keep the last layer-block
-                            cap.layers.clear();
+                            cap.by_layer.clear();
                             llama_pos new_n_past = 0;
                             if (mtmd_helper_eval_chunks(mctx, ctx_tgt, chunks.ptr.get(), 0, /*seq_id*/ 0,
-                                                        n_batch, /*logits_last*/ true, &new_n_past) != 0) { ok = false; break; }
-                            // the trailing text chunk (instruction) is the last decode; its
-                            // n_layers_full l_out entries are the post-image last-token residual.
-                            if ((int) cap.layers.size() < n_layers_full ||
-                                cap.layers.size() % (size_t) n_layers_full != 0) { ok = false; break; }
-                            if (res->n_layers == 0) {
-                                res->n_layers = n_layers_full;
-                                res->n_embd   = cap.n_embd;
-                                res->data.assign((size_t) res->n_examples * res->n_layers * res->n_embd, 0.0f);
+                                                        n_batch, /*logits_last*/ true, &new_n_past) != 0) {
+                                SRV_WRN("extract: skipping image %zu (decode failed)\n", ex); n_skipped++; continue;
                             }
-                            const size_t off = cap.layers.size() - (size_t) n_layers_full;
-                            for (int il = 0; il < n_layers_full; il++) {
-                                float * dst = res->data.data() + ((size_t) ex * res->n_layers + il) * res->n_embd;
-                                std::copy(cap.layers[off + il].begin(), cap.layers[off + il].end(), dst);
+                            // by_layer holds the final (post-image) decode's last-token residual
+                            // per layer; require the full residual set (0..n_layers_full-1).
+                            if ((int) cap.by_layer.size() != n_layers_full) {
+                                SRV_WRN("extract: skipping image %zu (got %zu/%d layers)\n", ex, cap.by_layer.size(), n_layers_full);
+                                n_skipped++; continue;
                             }
+                            std::vector<float> flat((size_t) n_layers_full * cap.n_embd);
+                            bool good = true;
+                            for (int il = 0; il < n_layers_full && good; il++) {
+                                auto itl = cap.by_layer.find(il);
+                                if (itl == cap.by_layer.end() || (int) itl->second.size() != cap.n_embd) { good = false; break; }
+                                std::copy(itl->second.begin(), itl->second.end(), flat.begin() + (size_t) il * cap.n_embd);
+                            }
+                            if (!good) { SRV_WRN("extract: skipping image %zu (layer shape)\n", ex); n_skipped++; continue; }
+                            n_embd_seen = cap.n_embd;
+                            kept.push_back(std::move(flat));
                         }
 
                         llama_set_eval_callback(ctx_tgt, nullptr, nullptr);
                         llama_memory_clear(llama_get_memory(ctx_tgt), true);
                         for (auto & slot : slots) { slot.prompt.tokens.clear(); }
-                        if (!ok) {
-                            send_error(task, "image hidden-state extraction failed (check the images and mmproj)", ERROR_TYPE_SERVER);
+                        if (kept.empty()) {
+                            send_error(task, "image hidden-state extraction failed (no image could be decoded; check the images and mmproj)", ERROR_TYPE_SERVER);
                             break;
+                        }
+                        if (n_skipped) { SRV_INF("extract: used %zu image(s), skipped %d\n", kept.size(), n_skipped); }
+                        res->n_examples = (int) kept.size();
+                        res->n_layers   = n_layers_full;
+                        res->n_embd     = n_embd_seen;
+                        res->data.assign((size_t) res->n_examples * n_layers_full * n_embd_seen, 0.0f);
+                        for (size_t i = 0; i < kept.size(); i++) {
+                            std::copy(kept[i].begin(), kept[i].end(),
+                                      res->data.begin() + (size_t) i * n_layers_full * n_embd_seen);
                         }
                         queue_results.send(std::move(res));
                         break;
