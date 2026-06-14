@@ -207,6 +207,13 @@ struct server_task {
     std::vector<llama_tokens> extract_seqs;
     int                       extract_pool = 0; // 0 = mean over tokens, 1 = last token
 
+    // image modality for EXTRACT_HIDDENS: one image file's bytes per example, run
+    // through mtmd with `extract_mm_prompt` (a chat-formatted prompt containing the
+    // media marker). When non-empty, image extraction is used instead of
+    // extract_seqs, capturing the post-image last-token residual (forces pool=last).
+    std::vector<std::vector<uint8_t>> extract_images;
+    std::string                       extract_mm_prompt;
+
     server_task() = default;
 
     server_task(server_task_type type) : type(type) {}
