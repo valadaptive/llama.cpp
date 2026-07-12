@@ -3014,7 +3014,10 @@ private:
                         mtmd::bitmap bmp(out.bitmap);
                         bmp.set_id(std::to_string(ex).c_str());
                         bitmaps.entries.push_back(std::move(bmp));
-                        mtmd_input_text it = { task.extract_mm_prompt.c_str(), /*add_special*/ true, /*parse_special*/ true };
+                        mtmd_input_text it = {
+                            task.extract_mm_prompt.c_str(), task.extract_mm_prompt.size(),
+                            /*add_special*/ true, /*parse_special*/ true,
+                        };
                         mtmd::input_chunks chunks(mtmd_input_chunks_init());
                         auto bptr = bitmaps.c_ptr();
                         if (mtmd_tokenize(mctx, chunks.ptr.get(), &it, bptr.data(), bptr.size()) != 0) { return false; }
