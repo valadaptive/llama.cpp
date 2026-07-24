@@ -887,13 +887,13 @@ struct vk_device_struct {
     vk_pipeline pipeline_add_id_f32;
 
     vk_pipeline pipeline_concat_i8, pipeline_concat_i16, pipeline_concat_i32, pipeline_concat_i64;
-    vk_pipeline pipeline_upscale_nearest_f32, pipeline_upscale_bilinear_f32, pipeline_upscale_bicubic_f32, pipeline_upscale_bilinear_antialias_f32;
-    vk_pipeline pipeline_scale_f32;
+    vk_pipeline pipeline_upscale_nearest[2], pipeline_upscale_bilinear[2], pipeline_upscale_bicubic[2], pipeline_upscale_bilinear_antialias[2];
+    vk_pipeline pipeline_scale[2];
     vk_pipeline pipeline_log[2];
     vk_pipeline pipeline_tri[2];
     vk_pipeline pipeline_diag[2];
     vk_pipeline pipeline_clamp[2];
-    vk_pipeline pipeline_pad_f32;
+    vk_pipeline pipeline_pad[2];
     vk_pipeline pipeline_roll_f32;
     vk_pipeline pipeline_repeat_i32, pipeline_repeat_back_f32;
     vk_pipeline pipeline_repeat_i16;
@@ -907,9 +907,9 @@ struct vk_device_struct {
     vk_pipeline pipeline_set_rows_i64[2][GGML_TYPE_COUNT];
     vk_pipeline pipeline_norm_f32;
     vk_pipeline pipeline_group_norm_f32;
-    vk_pipeline pipeline_rms_norm_f32;
+    vk_pipeline pipeline_rms_norm[2];
     vk_pipeline pipeline_rms_norm_mul_f32;
-    vk_pipeline pipeline_rms_norm_partials_f32;
+    vk_pipeline pipeline_rms_norm_partials[2];
     vk_pipeline pipeline_rms_norm_mul_partials_f32;
     vk_pipeline pipeline_rms_norm_mul_rope_f32_f32;
     vk_pipeline pipeline_rms_norm_mul_rope_f32_f16;
@@ -1010,10 +1010,14 @@ struct vk_device_struct {
     vk_pipeline pipeline_ssm_conv_bias_silu_f32;
     vk_pipeline pipeline_opt_step_adamw_f32;
     vk_pipeline pipeline_opt_step_sgd_f32;
-    std::map<vk_conv2d_pipeline_state, vk_pipeline> pipeline_conv2d_f32[CONV_SHAPE_COUNT];
+    std::map<vk_conv2d_pipeline_state, vk_pipeline> pipeline_conv2d_f32_f32[CONV_SHAPE_COUNT];
     std::map<vk_conv2d_pipeline_state, vk_pipeline> pipeline_conv2d_f16_f32[CONV_SHAPE_COUNT];
-    std::map<vk_conv2d_pipeline_state, vk_pipeline> pipeline_conv_transpose_2d_f32[CONV_SHAPE_COUNT];
+    std::map<vk_conv2d_pipeline_state, vk_pipeline> pipeline_conv2d_f32_f16[CONV_SHAPE_COUNT];
+    std::map<vk_conv2d_pipeline_state, vk_pipeline> pipeline_conv2d_f16_f16[CONV_SHAPE_COUNT];
+    std::map<vk_conv2d_pipeline_state, vk_pipeline> pipeline_conv_transpose_2d_f32_f32[CONV_SHAPE_COUNT];
     std::map<vk_conv2d_pipeline_state, vk_pipeline> pipeline_conv_transpose_2d_f16_f32[CONV_SHAPE_COUNT];
+    std::map<vk_conv2d_pipeline_state, vk_pipeline> pipeline_conv_transpose_2d_f32_f16[CONV_SHAPE_COUNT];
+    std::map<vk_conv2d_pipeline_state, vk_pipeline> pipeline_conv_transpose_2d_f16_f16[CONV_SHAPE_COUNT];
     std::map<vk_conv3d_pipeline_state, vk_pipeline> pipeline_conv3d_f32[CONV_SHAPE_COUNT];
     std::map<vk_conv3d_pipeline_state, vk_pipeline> pipeline_conv3d_f16_f32[CONV_SHAPE_COUNT];
     vk_pipeline pipeline_conv2d_dw_whcn_f32, pipeline_conv2d_dw_whcn_f16_f32;
@@ -5249,9 +5253,11 @@ static void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested) {
     ggml_vk_create_pipeline(device, device->pipeline_norm_f32, "norm_f32", norm_f32_len, norm_f32_data, "main", 2, sizeof(vk_op_unary_push_constants), {1, 1, 1}, {}, 1);
     ggml_vk_create_pipeline(device, device->pipeline_group_norm_f32, "group_norm_f32", group_norm_f32_len, group_norm_f32_data, "main", 2, sizeof(vk_op_push_constants), {1, 1, 1}, {}, 1);
 
-    ggml_vk_create_pipeline(device, device->pipeline_rms_norm_f32, "rms_norm_f32", rms_norm_f32_len, rms_norm_f32_data, "main", 4, sizeof(vk_op_binary_push_constants), {1, 1, 1}, {0, 0}, 1, true);
+    ggml_vk_create_pipeline(device, device->pipeline_rms_norm[0], "rms_norm_f32", rms_norm_f32_len, rms_norm_f32_data, "main", 4, sizeof(vk_op_binary_push_constants), {1, 1, 1}, {0, 0}, 1, true);
+    ggml_vk_create_pipeline(device, device->pipeline_rms_norm[1], "rms_norm_f16", rms_norm_f16_len, rms_norm_f16_data, "main", 4, sizeof(vk_op_binary_push_constants), {1, 1, 1}, {0, 0}, 1, true);
     ggml_vk_create_pipeline(device, device->pipeline_rms_norm_mul_f32, "rms_norm_mul_f32", rms_norm_f32_len, rms_norm_f32_data, "main", 4, sizeof(vk_op_binary_push_constants), {1, 1, 1}, {0, 1}, 1, true);
-    ggml_vk_create_pipeline(device, device->pipeline_rms_norm_partials_f32, "rms_norm_partials_f32", rms_norm_partials_f32_len, rms_norm_partials_f32_data, "main", 4, sizeof(vk_op_binary_push_constants), {1, 1, 1}, {0, 0}, 1, true);
+    ggml_vk_create_pipeline(device, device->pipeline_rms_norm_partials[0], "rms_norm_partials_f32", rms_norm_partials_f32_len, rms_norm_partials_f32_data, "main", 4, sizeof(vk_op_binary_push_constants), {1, 1, 1}, {0, 0}, 1, true);
+    ggml_vk_create_pipeline(device, device->pipeline_rms_norm_partials[1], "rms_norm_partials_f16", rms_norm_partials_f16_len, rms_norm_partials_f16_data, "main", 4, sizeof(vk_op_binary_push_constants), {1, 1, 1}, {0, 0}, 1, true);
     ggml_vk_create_pipeline(device, device->pipeline_rms_norm_mul_partials_f32, "rms_norm_mul_partials_f32", rms_norm_partials_f32_len, rms_norm_partials_f32_data, "main", 4, sizeof(vk_op_binary_push_constants), {1, 1, 1}, {0, 1}, 1, true);
 
     if (sizeof(vk_op_rms_norm_mul_rope_push_constants) <= device->properties.limits.maxPushConstantsSize) {
@@ -5364,12 +5370,17 @@ static void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested) {
     ggml_vk_create_pipeline(device, device->pipeline_concat_i32, "concat_i32", concat_i32_len, concat_i32_data, "main", 3, sizeof(vk_op_binary_push_constants), {512, 1, 1}, {}, 1);
     ggml_vk_create_pipeline(device, device->pipeline_concat_i64, "concat_i64", concat_i64_len, concat_i64_data, "main", 3, sizeof(vk_op_binary_push_constants), {512, 1, 1}, {}, 1);
 
-    ggml_vk_create_pipeline(device, device->pipeline_upscale_nearest_f32, "upscale_f32", upscale_f32_len, upscale_f32_data, "main", 2, sizeof(vk_op_upscale_push_constants), {512, 1, 1}, {GGML_SCALE_MODE_NEAREST}, 1);
-    ggml_vk_create_pipeline(device, device->pipeline_upscale_bilinear_f32, "upscale_f32", upscale_f32_len, upscale_f32_data, "main", 2, sizeof(vk_op_upscale_push_constants), {512, 1, 1}, {GGML_SCALE_MODE_BILINEAR}, 1);
-    ggml_vk_create_pipeline(device, device->pipeline_upscale_bicubic_f32, "upscale_f32", upscale_f32_len, upscale_f32_data, "main", 2, sizeof(vk_op_upscale_push_constants), {512, 1, 1}, {GGML_SCALE_MODE_BICUBIC}, 1);
-    ggml_vk_create_pipeline(device, device->pipeline_upscale_bilinear_antialias_f32, "upscale_f32", upscale_f32_len, upscale_f32_data, "main", 2, sizeof(vk_op_upscale_push_constants), {512, 1, 1}, {GGML_SCALE_MODE_BILINEAR | GGML_SCALE_FLAG_ANTIALIAS}, 1);
+    ggml_vk_create_pipeline(device, device->pipeline_upscale_nearest[0], "upscale_f32", upscale_f32_len, upscale_f32_data, "main", 2, sizeof(vk_op_upscale_push_constants), {512, 1, 1}, {GGML_SCALE_MODE_NEAREST}, 1);
+    ggml_vk_create_pipeline(device, device->pipeline_upscale_nearest[1], "upscale_f16", upscale_f16_len, upscale_f16_data, "main", 2, sizeof(vk_op_upscale_push_constants), {512, 1, 1}, {GGML_SCALE_MODE_NEAREST}, 1);
+    ggml_vk_create_pipeline(device, device->pipeline_upscale_bilinear[0], "upscale_f32", upscale_f32_len, upscale_f32_data, "main", 2, sizeof(vk_op_upscale_push_constants), {512, 1, 1}, {GGML_SCALE_MODE_BILINEAR}, 1);
+    ggml_vk_create_pipeline(device, device->pipeline_upscale_bilinear[1], "upscale_f16", upscale_f16_len, upscale_f16_data, "main", 2, sizeof(vk_op_upscale_push_constants), {512, 1, 1}, {GGML_SCALE_MODE_BILINEAR}, 1);
+    ggml_vk_create_pipeline(device, device->pipeline_upscale_bicubic[0], "upscale_f32", upscale_f32_len, upscale_f32_data, "main", 2, sizeof(vk_op_upscale_push_constants), {512, 1, 1}, {GGML_SCALE_MODE_BICUBIC}, 1);
+    ggml_vk_create_pipeline(device, device->pipeline_upscale_bicubic[1], "upscale_f16", upscale_f16_len, upscale_f16_data, "main", 2, sizeof(vk_op_upscale_push_constants), {512, 1, 1}, {GGML_SCALE_MODE_BICUBIC}, 1);
+    ggml_vk_create_pipeline(device, device->pipeline_upscale_bilinear_antialias[0], "upscale_f32", upscale_f32_len, upscale_f32_data, "main", 2, sizeof(vk_op_upscale_push_constants), {512, 1, 1}, {GGML_SCALE_MODE_BILINEAR | GGML_SCALE_FLAG_ANTIALIAS}, 1);
+    ggml_vk_create_pipeline(device, device->pipeline_upscale_bilinear_antialias[1], "upscale_f16", upscale_f16_len, upscale_f16_data, "main", 2, sizeof(vk_op_upscale_push_constants), {512, 1, 1}, {GGML_SCALE_MODE_BILINEAR | GGML_SCALE_FLAG_ANTIALIAS}, 1);
 
-    ggml_vk_create_pipeline(device, device->pipeline_scale_f32, "scale_f32", scale_f32_len, scale_f32_data, "main", 2, sizeof(vk_op_unary_push_constants), {512, 1, 1}, {}, 1);
+    ggml_vk_create_pipeline(device, device->pipeline_scale[0], "scale_f32", scale_f32_len, scale_f32_data, "main", 2, sizeof(vk_op_unary_push_constants), {512, 1, 1}, {}, 1);
+    ggml_vk_create_pipeline(device, device->pipeline_scale[1], "scale_f16", scale_f16_len, scale_f16_data, "main", 2, sizeof(vk_op_unary_push_constants), {512, 1, 1}, {}, 1);
 
     ggml_vk_create_pipeline(device, device->pipeline_log[0], "log_f32", log_f32_len, log_f32_data, "main", 2, sizeof(vk_op_unary_push_constants), {512, 1, 1}, {}, 1);
     ggml_vk_create_pipeline(device, device->pipeline_log[1], "log_f16", log_f16_len, log_f16_data, "main", 2, sizeof(vk_op_unary_push_constants), {512, 1, 1}, {}, 1);
@@ -5380,7 +5391,8 @@ static void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested) {
     ggml_vk_create_pipeline(device, device->pipeline_diag[0], "diag_f32", diag_f32_len, diag_f32_data, "main", 2, sizeof(vk_op_unary_push_constants), {512, 1, 1}, {}, 1);
     ggml_vk_create_pipeline(device, device->pipeline_diag[1], "diag_f16", diag_f16_len, diag_f16_data, "main", 2, sizeof(vk_op_unary_push_constants), {512, 1, 1}, {}, 1);
 
-    ggml_vk_create_pipeline(device, device->pipeline_pad_f32, "pad_f32", pad_f32_len, pad_f32_data, "main", 2, sizeof(vk_op_pad_push_constants), {512, 1, 1}, {}, 1);
+    ggml_vk_create_pipeline(device, device->pipeline_pad[0], "pad_f32", pad_f32_len, pad_f32_data, "main", 2, sizeof(vk_op_pad_push_constants), {512, 1, 1}, {}, 1);
+    ggml_vk_create_pipeline(device, device->pipeline_pad[1], "pad_f16", pad_f16_len, pad_f16_data, "main", 2, sizeof(vk_op_pad_push_constants), {512, 1, 1}, {}, 1);
 
     ggml_vk_create_pipeline(device, device->pipeline_roll_f32, "roll_f32", roll_f32_len, roll_f32_data, "main", 2, sizeof(vk_op_unary_push_constants), {512, 1, 1}, {}, 1);
 
@@ -5797,10 +5809,14 @@ static void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested) {
                 sizeof(vk_op_conv2d_push_constants), wg_denoms, spec_constants_cpy, 1, true, use_collectives || conv2d_required_subgroup_size, conv2d_required_subgroup_size);    \
         }
 #define CREATE_CONVS(spv_suffix) \
-        CREATE_CONV(conv2d, _f32, spv_suffix) \
+        CREATE_CONV(conv2d, _f32_f32, spv_suffix) \
         CREATE_CONV(conv2d, _f16_f32, spv_suffix) \
-        CREATE_CONV(conv_transpose_2d, _f32, spv_suffix) \
-        CREATE_CONV(conv_transpose_2d, _f16_f32, spv_suffix)
+        CREATE_CONV(conv2d, _f32_f16, spv_suffix) \
+        CREATE_CONV(conv2d, _f16_f16, spv_suffix) \
+        CREATE_CONV(conv_transpose_2d, _f32_f32, spv_suffix) \
+        CREATE_CONV(conv_transpose_2d, _f16_f32, spv_suffix) \
+        CREATE_CONV(conv_transpose_2d, _f32_f16, spv_suffix) \
+        CREATE_CONV(conv_transpose_2d, _f16_f16, spv_suffix)
 #if defined(GGML_VULKAN_COOPMAT2_GLSLC_SUPPORT)
         if (device->coopmat2) {
             CREATE_CONVS(_cm2)
@@ -10907,25 +10923,28 @@ static vk_pipeline ggml_vk_op_get_pipeline(ggml_backend_vk_context * ctx, const 
         }
     }
     case GGML_OP_UPSCALE:
-        if (src0->type == GGML_TYPE_F32 && dst->type == GGML_TYPE_F32) {
+        if (src0->type == dst->type &&
+            (src0->type == GGML_TYPE_F32 || src0->type == GGML_TYPE_F16)) {
             uint32_t mode = (ggml_get_op_params_i32(dst, 0) & (0xFF | GGML_SCALE_FLAG_ANTIALIAS));
+            const int type_idx = dst->type == GGML_TYPE_F16;
             switch (mode) {
                 case GGML_SCALE_MODE_NEAREST:
-                    return ctx->device->pipeline_upscale_nearest_f32;
+                    return ctx->device->pipeline_upscale_nearest[type_idx];
                 case GGML_SCALE_MODE_BILINEAR:
-                    return ctx->device->pipeline_upscale_bilinear_f32;
+                    return ctx->device->pipeline_upscale_bilinear[type_idx];
                 case GGML_SCALE_MODE_BICUBIC:
-                    return ctx->device->pipeline_upscale_bicubic_f32;
+                    return ctx->device->pipeline_upscale_bicubic[type_idx];
                 case GGML_SCALE_MODE_BILINEAR | GGML_SCALE_FLAG_ANTIALIAS:
-                    return ctx->device->pipeline_upscale_bilinear_antialias_f32;
+                    return ctx->device->pipeline_upscale_bilinear_antialias[type_idx];
                 default:
                     return nullptr;
             }
         }
         return nullptr;
     case GGML_OP_SCALE:
-        if (src0->type == GGML_TYPE_F32 && dst->type == GGML_TYPE_F32) {
-            return ctx->device->pipeline_scale_f32;
+        if (src0->type == dst->type &&
+            (src0->type == GGML_TYPE_F32 || src0->type == GGML_TYPE_F16)) {
+            return ctx->device->pipeline_scale[dst->type == GGML_TYPE_F16];
         }
         return nullptr;
     case GGML_OP_SQR:
@@ -10977,8 +10996,9 @@ static vk_pipeline ggml_vk_op_get_pipeline(ggml_backend_vk_context * ctx, const 
         }
         return nullptr;
     case GGML_OP_PAD:
-        if (src0->type == GGML_TYPE_F32 && dst->type == GGML_TYPE_F32) {
-            return ctx->device->pipeline_pad_f32;
+        if (src0->type == dst->type &&
+            (src0->type == GGML_TYPE_F32 || src0->type == GGML_TYPE_F16)) {
+            return ctx->device->pipeline_pad[dst->type == GGML_TYPE_F16];
         }
         return nullptr;
     case GGML_OP_ROLL:
@@ -11032,11 +11052,19 @@ static vk_pipeline ggml_vk_op_get_pipeline(ggml_backend_vk_context * ctx, const 
         }
         return nullptr;
     case GGML_OP_RMS_NORM:
-        if (src0->type == GGML_TYPE_F32 && dst->type == GGML_TYPE_F32) {
+        if (src0->type == dst->type &&
+            (src0->type == GGML_TYPE_F32 || src0->type == GGML_TYPE_F16)) {
+            const int type_idx = dst->type == GGML_TYPE_F16;
             if (ctx->do_add_rms_partials) {
-                return ctx->num_additional_fused_ops > 0 ? ctx->device->pipeline_rms_norm_mul_partials_f32 : ctx->device->pipeline_rms_norm_partials_f32;
+                if (ctx->num_additional_fused_ops > 0 && type_idx == 0) {
+                    return ctx->device->pipeline_rms_norm_mul_partials_f32;
+                }
+                return ctx->device->pipeline_rms_norm_partials[type_idx];
             } else {
-                return ctx->num_additional_fused_ops > 0 ? ctx->device->pipeline_rms_norm_mul_f32 : ctx->device->pipeline_rms_norm_f32;
+                if (ctx->num_additional_fused_ops > 0 && type_idx == 0) {
+                    return ctx->device->pipeline_rms_norm_mul_f32;
+                }
+                return ctx->device->pipeline_rms_norm[type_idx];
             }
         }
         return nullptr;
@@ -11355,7 +11383,9 @@ static vk_pipeline ggml_vk_op_get_pipeline(ggml_backend_vk_context * ctx, const 
         return nullptr;
     case GGML_OP_CONV_2D:
     case GGML_OP_CONV_TRANSPOSE_2D:
-        if (src1->type == GGML_TYPE_F32 && dst->type == GGML_TYPE_F32) {
+        if ((src0->type == GGML_TYPE_F32 || src0->type == GGML_TYPE_F16) &&
+            (src1->type == GGML_TYPE_F32 || src1->type == GGML_TYPE_F16) &&
+            src1->type == dst->type) {
             uint32_t K = dst->ne[2]; // Cout
             uint32_t NPQ = dst->ne[3] * dst->ne[1] * dst->ne[0]; // N * OH * OW
             vk_conv_shapes shape = ggml_vk_conv_select_shape(ctx, K, NPQ);
@@ -11383,17 +11413,27 @@ static vk_pipeline ggml_vk_op_get_pipeline(ggml_backend_vk_context * ctx, const 
             vk_conv2d_pipeline_state conv2d_pipeline_state(s0, s1, p0, p1, d0, d1, KW, KH, aligned);
 
             std::map<vk_conv2d_pipeline_state, vk_pipeline> *pipelines = nullptr;
+            const bool kernel_f16 = src0->type == GGML_TYPE_F16;
+            const bool io_f16 = src1->type == GGML_TYPE_F16;
             if (op == GGML_OP_CONV_2D) {
-                if (src0->type == GGML_TYPE_F32) {
-                    pipelines = &ctx->device->pipeline_conv2d_f32[shape];
-                } else if (src0->type == GGML_TYPE_F16) {
+                if (!kernel_f16 && !io_f16) {
+                    pipelines = &ctx->device->pipeline_conv2d_f32_f32[shape];
+                } else if (kernel_f16 && !io_f16) {
                     pipelines = &ctx->device->pipeline_conv2d_f16_f32[shape];
+                } else if (!kernel_f16 && io_f16) {
+                    pipelines = &ctx->device->pipeline_conv2d_f32_f16[shape];
+                } else {
+                    pipelines = &ctx->device->pipeline_conv2d_f16_f16[shape];
                 }
             } else if (op == GGML_OP_CONV_TRANSPOSE_2D) {
-                if (src0->type == GGML_TYPE_F32) {
-                    pipelines = &ctx->device->pipeline_conv_transpose_2d_f32[shape];
-                } else if (src0->type == GGML_TYPE_F16) {
+                if (!kernel_f16 && !io_f16) {
+                    pipelines = &ctx->device->pipeline_conv_transpose_2d_f32_f32[shape];
+                } else if (kernel_f16 && !io_f16) {
                     pipelines = &ctx->device->pipeline_conv_transpose_2d_f16_f32[shape];
+                } else if (!kernel_f16 && io_f16) {
+                    pipelines = &ctx->device->pipeline_conv_transpose_2d_f32_f16[shape];
+                } else {
+                    pipelines = &ctx->device->pipeline_conv_transpose_2d_f16_f16[shape];
                 }
             }
 
@@ -13734,13 +13774,13 @@ static void ggml_vk_pool_2d(ggml_backend_vk_context * ctx, vk_context& subctx, c
 static void ggml_vk_conv_2d(ggml_backend_vk_context * ctx, vk_context & subctx, const ggml_tensor * src0,
                             const ggml_tensor * src1, ggml_tensor * dst) {
     GGML_ASSERT(src0->type == GGML_TYPE_F32 || src0->type == GGML_TYPE_F16);
-    GGML_ASSERT(src1->type == GGML_TYPE_F32);
-    GGML_ASSERT(dst->type == GGML_TYPE_F32);
+    GGML_ASSERT(src1->type == GGML_TYPE_F32 || src1->type == GGML_TYPE_F16);
+    GGML_ASSERT(dst->type == src1->type);
 
     GGML_TENSOR_BINARY_OP_LOCALS
     GGML_ASSERT(nb00 == sizeof(float) || nb00 == sizeof(ggml_fp16_t));
-    GGML_ASSERT(nb10 == sizeof(float));
-    GGML_ASSERT(nb0 == sizeof(float));
+    GGML_ASSERT(nb10 == sizeof(float) || nb10 == sizeof(ggml_fp16_t));
+    GGML_ASSERT(nb0 == sizeof(float) || nb0 == sizeof(ggml_fp16_t));
 
     bool transpose = dst->op == GGML_OP_CONV_TRANSPOSE_2D;
 
@@ -17856,7 +17896,8 @@ static bool ggml_backend_vk_device_supports_op(ggml_backend_dev_t dev, const ggm
                     return false;
                 }
             }
-            return op->src[0]->type == GGML_TYPE_F32;
+            return (op->src[0]->type == GGML_TYPE_F32 || op->src[0]->type == GGML_TYPE_F16) &&
+                   op->type == op->src[0]->type;
         case GGML_OP_ACC:
             return op->src[0]->type == GGML_TYPE_F32 && op->src[1]->type == GGML_TYPE_F32 && op->type == GGML_TYPE_F32;
         case GGML_OP_SET:
@@ -17879,8 +17920,12 @@ static bool ggml_backend_vk_device_supports_op(ggml_backend_dev_t dev, const ggm
         case GGML_OP_FILL:
             return op->type == GGML_TYPE_F32 || op->type == GGML_TYPE_F16;
         case GGML_OP_SCALE:
-            return ggml_is_contiguous(op->src[0]) && op->src[0]->type == GGML_TYPE_F32;
+            return ggml_is_contiguous(op->src[0]) &&
+                   (op->src[0]->type == GGML_TYPE_F32 || op->src[0]->type == GGML_TYPE_F16) &&
+                   op->type == op->src[0]->type;
         case GGML_OP_PAD:
+            return (op->src[0]->type == GGML_TYPE_F32 || op->src[0]->type == GGML_TYPE_F16) &&
+                   op->type == op->src[0]->type;
         case GGML_OP_ROLL:
             return op->src[0]->type == GGML_TYPE_F32;
         case GGML_OP_DIAG_MASK_INF:
@@ -18009,8 +18054,8 @@ static bool ggml_backend_vk_device_supports_op(ggml_backend_dev_t dev, const ggm
             {
                 // Channel-contiguous format is not supported yet.
                 return ((op->src[0]->type == GGML_TYPE_F32 || op->src[0]->type == GGML_TYPE_F16) &&
-                    op->src[1]->type == GGML_TYPE_F32 &&
-                    op->type == GGML_TYPE_F32 &&
+                    (op->src[1]->type == GGML_TYPE_F32 || op->src[1]->type == GGML_TYPE_F16) &&
+                    op->type == op->src[1]->type &&
                     ggml_is_contiguous(op->src[0]) &&
                     ggml_is_contiguous(op->src[1]) &&
                     ggml_is_contiguous(op));

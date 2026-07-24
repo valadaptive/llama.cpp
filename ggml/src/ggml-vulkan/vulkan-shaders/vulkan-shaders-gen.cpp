@@ -798,7 +798,9 @@ void process_shaders() {
     string_to_spv("norm_f32", "norm.comp", merge_maps(base_dict, {{"A_TYPE", "float"}, {"D_TYPE", "float"}}));
     string_to_spv("group_norm_f32", "group_norm.comp", merge_maps(base_dict, {{"A_TYPE", "float"}, {"D_TYPE", "float"}}));
     string_to_spv("rms_norm_f32", "rms_norm.comp", merge_maps(base_dict, {{"A_TYPE", "float"}, {"B_TYPE", "float"}, {"D_TYPE", "float"}}));
+    string_to_spv("rms_norm_f16", "rms_norm.comp", merge_maps(base_dict, {{"A_TYPE", "float16_t"}, {"B_TYPE", "float16_t"}, {"D_TYPE", "float16_t"}}));
     string_to_spv("rms_norm_partials_f32", "rms_norm_partials.comp", merge_maps(base_dict, {{"A_TYPE", "float"}, {"B_TYPE", "float"}, {"D_TYPE", "float"}}));
+    string_to_spv("rms_norm_partials_f16", "rms_norm_partials.comp", merge_maps(base_dict, {{"A_TYPE", "float16_t"}, {"B_TYPE", "float16_t"}, {"D_TYPE", "float16_t"}}));
     string_to_spv("rms_norm_mul_rope_f32_f32", "rms_norm.comp", merge_maps(base_dict, {{"A_TYPE", "float"}, {"B_TYPE", "float"}, {"D_TYPE", "float"}, {"ROPE_D_TYPE", "float"}, {"RMS_NORM_ROPE_FUSION", "1"}}));
     string_to_spv("rms_norm_mul_rope_f32_f16", "rms_norm.comp", merge_maps(base_dict, {{"A_TYPE", "float"}, {"B_TYPE", "float"}, {"D_TYPE", "float"}, {"ROPE_D_TYPE", "float16_t"}, {"RMS_NORM_ROPE_FUSION", "1"}}));
     string_to_spv("rms_norm_back_f32", "rms_norm_back.comp", merge_maps(base_dict, {{"A_TYPE", "float"}, {"B_TYPE", "float"}, {"D_TYPE", "float"}}));
@@ -885,8 +887,10 @@ void process_shaders() {
     string_to_spv("repeat_i16", "repeat.comp", {{"A_TYPE", "int16_t"}, {"D_TYPE", "int16_t"}});
 
     string_to_spv("scale_f32", "scale.comp", {{"A_TYPE", "float"}, {"D_TYPE", "float"}, {"FLOAT_TYPE", "float"}});
+    string_to_spv("scale_f16", "scale.comp", {{"A_TYPE", "float16_t"}, {"D_TYPE", "float16_t"}, {"FLOAT_TYPE", "float"}});
 
     string_to_spv("pad_f32", "pad.comp", {{"A_TYPE", "float"}, {"D_TYPE", "float"}});
+    string_to_spv("pad_f16", "pad.comp", {{"A_TYPE", "float16_t"}, {"D_TYPE", "float16_t"}});
 
     string_to_spv("concat_i8", "concat.comp", {{"A_TYPE", "uint8_t"}, {"B_TYPE", "uint8_t"}, {"D_TYPE", "uint8_t"}});
     string_to_spv("concat_i16", "concat.comp", {{"A_TYPE", "uint16_t"}, {"B_TYPE", "uint16_t"}, {"D_TYPE", "uint16_t"}});
@@ -894,6 +898,7 @@ void process_shaders() {
     string_to_spv("concat_i64", "concat.comp", {{"A_TYPE", "uvec2"}, {"B_TYPE", "uvec2"}, {"D_TYPE", "uvec2"}});
 
     string_to_spv("upscale_f32", "upscale.comp", {{"A_TYPE", "float"}, {"B_TYPE", "float"}, {"D_TYPE", "float"}});
+    string_to_spv("upscale_f16", "upscale.comp", {{"A_TYPE", "float16_t"}, {"B_TYPE", "float16_t"}, {"D_TYPE", "float16_t"}});
 
     string_to_spv("exp_f16",        "unary.comp",       {{"A_TYPE", "float16_t"},   {"D_TYPE", "float16_t"}, {"OP", "op_exp"}});
     string_to_spv("exp_f32",        "unary.comp",       {{"A_TYPE", "float"},       {"D_TYPE", "float"},     {"OP", "op_exp"}});
@@ -1068,14 +1073,17 @@ void process_shaders() {
     for (auto transpose : {false, true}) {
         for (auto unroll : {false, true}) {
             for (auto a_f16 : {false, true}) {
-                std::map<std::string, std::string> defines = {
-                    {"A_TYPE", a_f16 ? "float16_t" : "float"}, {"B_TYPE", "float"}, {"D_TYPE", "float"},
-                    {"USE_COLLECTIVES", "1"}, {"UNROLL", unroll ? "[[unroll]]" : ""},
-                };
-                if (transpose) defines["TRANSPOSE"] = "1";
-                std::string name = std::string(transpose ? "conv_transpose_2d": "conv2d")
-                    + (a_f16 ? "_f16" : "") + "_f32";
-                string_to_spv(name + (unroll ? "_unroll" : ""), "conv2d_mm.comp", defines);
+                for (auto io_f16 : {false, true}) {
+                    std::map<std::string, std::string> defines = {
+                        {"A_TYPE", a_f16 ? "float16_t" : "float"},
+                        {"B_TYPE", io_f16 ? "float16_t" : "float"},
+                        {"D_TYPE", io_f16 ? "float16_t" : "float"},
+                        {"USE_COLLECTIVES", "1"}, {"UNROLL", unroll ? "[[unroll]]" : ""},
+                    };
+                    if (transpose) defines["TRANSPOSE"] = "1";
+                    std::string name = std::string(transpose ? "conv_transpose_2d": "conv2d")
+                        + (a_f16 ? "_f16" : "_f32") + (io_f16 ? "_f16" : "_f32");
+                    string_to_spv(name + (unroll ? "_unroll" : ""), "conv2d_mm.comp", defines);
 #if defined(GGML_VULKAN_COOPMAT2_GLSLC_SUPPORT)
                 if (unroll) {
                     auto cm2_defines = defines;
@@ -1090,6 +1098,7 @@ void process_shaders() {
                     string_to_spv(name, "conv2d_mm.comp", cm1_defines, true, true, false);
                 }
 #endif
+                }
             }
         }
     }
