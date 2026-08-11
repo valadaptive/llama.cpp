@@ -149,5 +149,10 @@ bool common_models_handler_is_preset_repo(const common_models_handler & handler)
 // download and update params with the downloaded model path
 void common_models_handler_apply(common_models_handler & handler, common_params & params, common_download_callback * callback = nullptr);
 
+// Apply the normalization and validation normally performed after parsing CLI
+// arguments. Embedders that populate common_params through presets / handlers
+// should call this once before consuming the params.
+void common_params_postprocess(common_params & params, llama_example ex);
+
 // initialize argument parser context - used by test-arg-parser and preset
 common_params_context common_params_parser_init(common_params & params, llama_example ex, void(*print_usage)(int, char **) = nullptr);

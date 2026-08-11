@@ -704,6 +704,78 @@ void common_models_handler_apply(common_models_handler & handler, common_params 
 // CLI argument parsing functions
 //
 
+void common_params_postprocess(common_params & params, llama_example ex) {
+    postprocess_cpu_params(params.cpuparams,       nullptr);
+    postprocess_cpu_params(params.cpuparams_batch, &params.cpuparams);
+
+    postprocess_cpu_params(params.speculative.draft.cpuparams,       &params.cpuparams);
+    postprocess_cpu_params(params.speculative.draft.cpuparams_batch, &params.cpuparams_batch);
+
+    if (params.prompt_cache_all && (params.interactive || params.interactive_first)) {
+        throw std::invalid_argument("error: --prompt-cache-all not supported in interactive mode yet\n");
+    }
+
+    const bool skip_model_download =
+        // server will call common_params_handle_models() later, so we skip it here
+        ex == LLAMA_EXAMPLE_SERVER ||
+        // download calls common_params_handle_models() itself and prints the paths
+        ex == LLAMA_EXAMPLE_DOWNLOAD ||
+        // export_graph_ops loads only metadata
+        ex == LLAMA_EXAMPLE_EXPORT_GRAPH_OPS;
+
+    if (!skip_model_download) {
+        common_models_handler handler = common_models_handler_init(params, ex);
+        common_models_handler_apply(handler, params);
+
+        const bool can_skip_model = params.usage || params.completion || !params.server_base.empty();
+        if (!can_skip_model && params.model.path.empty()) {
+            throw std::invalid_argument("error: --model is required\n");
+        }
+    }
+
+    if (params.escape) {
+        string_process_escapes(params.prompt);
+        string_process_escapes(params.input_prefix);
+        string_process_escapes(params.input_suffix);
+        for (auto & antiprompt : params.antiprompt) {
+            string_process_escapes(antiprompt);
+        }
+        for (auto & seq_breaker : params.sampling.dry_sequence_breakers) {
+            string_process_escapes(seq_breaker);
+        }
+    }
+
+    if (!params.kv_overrides.empty() && params.kv_overrides.back().key[0] != 0) {
+        params.kv_overrides.emplace_back();
+        params.kv_overrides.back().key[0] = 0;
+    }
+
+    const bool mcp_enabled = !params.mcp_servers_config.empty() || !params.mcp_servers_json.empty();
+    if ((!params.server_tools.empty() || mcp_enabled) && !params.cors_origins_explicit) {
+        LOG_WRN("server tools or MCP servers are enabled, using localhost as default CORS origin (change via --cors-origins)\n");
+        params.cors_origins = "localhost";
+    }
+
+    // pad tensor_buft_overrides for llama_params_fit:
+    const size_t ntbo = llama_max_tensor_buft_overrides();
+    while (params.tensor_buft_overrides.size() < ntbo) {
+        params.tensor_buft_overrides.push_back({nullptr, nullptr});
+    }
+
+    if (!params.speculative.draft.tensor_buft_overrides.empty() &&
+            params.speculative.draft.tensor_buft_overrides.back().pattern != nullptr) {
+        params.speculative.draft.tensor_buft_overrides.push_back({nullptr, nullptr});
+    }
+
+    if (!params.chat_template.empty() && !common_chat_verify_template(params.chat_template, params.use_jinja)) {
+        throw std::runtime_error(string_format(
+            "error: the supplied chat template is not supported: %s%s\n",
+            params.chat_template.c_str(),
+            params.use_jinja ? "" : "\nnote: llama.cpp was started without --jinja, we only support commonly used templates"
+        ));
+    }
+}
+
 static bool common_params_parse_ex(int argc, char ** argv, common_params_context & ctx_arg) {
     common_params & params = ctx_arg.params;
 
@@ -830,77 +902,7 @@ static bool common_params_parse_ex(int argc, char ** argv, common_params_context
     // parse all CLI args now, so that -hf is available below for remote preset resolution
     parse_cli_args();
 
-    postprocess_cpu_params(params.cpuparams,       nullptr);
-    postprocess_cpu_params(params.cpuparams_batch, &params.cpuparams);
-
-    postprocess_cpu_params(params.speculative.draft.cpuparams,       &params.cpuparams);
-    postprocess_cpu_params(params.speculative.draft.cpuparams_batch, &params.cpuparams_batch);
-
-    if (params.prompt_cache_all && (params.interactive || params.interactive_first)) {
-        throw std::invalid_argument("error: --prompt-cache-all not supported in interactive mode yet\n");
-    }
-
-    const bool skip_model_download =
-        // server will call common_params_handle_models() later, so we skip it here
-        ctx_arg.ex == LLAMA_EXAMPLE_SERVER ||
-        // download calls common_params_handle_models() itself and prints the paths
-        ctx_arg.ex == LLAMA_EXAMPLE_DOWNLOAD ||
-        // export_graph_ops loads only metadata
-        ctx_arg.ex == LLAMA_EXAMPLE_EXPORT_GRAPH_OPS;
-
-    if (!skip_model_download) {
-        // handle model and download
-        common_models_handler handler = common_models_handler_init(params, ctx_arg.ex);
-        common_models_handler_apply(handler, params);
-
-        // model is required (except for server)
-        // TODO @ngxson : maybe show a list of available models in CLI in this case
-        bool can_skip_model = params.usage || params.completion || !params.server_base.empty();
-        if (!can_skip_model && params.model.path.empty()) {
-            throw std::invalid_argument("error: --model is required\n");
-        }
-    }
-
-    if (params.escape) {
-        string_process_escapes(params.prompt);
-        string_process_escapes(params.input_prefix);
-        string_process_escapes(params.input_suffix);
-        for (auto & antiprompt : params.antiprompt) {
-            string_process_escapes(antiprompt);
-        }
-        for (auto & seq_breaker : params.sampling.dry_sequence_breakers) {
-            string_process_escapes(seq_breaker);
-        }
-    }
-
-    if (!params.kv_overrides.empty()) {
-        params.kv_overrides.emplace_back();
-        params.kv_overrides.back().key[0] = 0;
-    }
-
-    const bool mcp_enabled = !params.mcp_servers_config.empty() || !params.mcp_servers_json.empty();
-    if ((!params.server_tools.empty() || mcp_enabled) && !params.cors_origins_explicit) {
-        LOG_WRN("server tools or MCP servers are enabled, using localhost as default CORS origin (change via --cors-origins)\n");
-        params.cors_origins = "localhost";
-    }
-
-    // pad tensor_buft_overrides for llama_params_fit:
-    const size_t ntbo = llama_max_tensor_buft_overrides();
-    while (params.tensor_buft_overrides.size() < ntbo) {
-        params.tensor_buft_overrides.push_back({nullptr, nullptr});
-    }
-
-    if (!params.speculative.draft.tensor_buft_overrides.empty()) {
-        params.speculative.draft.tensor_buft_overrides.push_back({nullptr, nullptr});
-    }
-
-    if (!params.chat_template.empty() && !common_chat_verify_template(params.chat_template, params.use_jinja)) {
-        throw std::runtime_error(string_format(
-            "error: the supplied chat template is not supported: %s%s\n",
-            params.chat_template.c_str(),
-            params.use_jinja ? "" : "\nnote: llama.cpp was started without --jinja, we only support commonly used templates"
-        ));
-    }
+    common_params_postprocess(params, ctx_arg.ex);
 
     return true;
 }
