@@ -89,6 +89,7 @@ typedef bool (*mtmd_progress_callback)(float progress, void * user_data);
 
 struct mtmd_context_params {
     bool use_gpu;
+    const char * backend_device; // optional backend device name; NULL uses MTMD_BACKEND_DEVICE/default GPU
     bool print_timings;
     int n_threads;
     const char * image_marker; // deprecated, use media_marker instead

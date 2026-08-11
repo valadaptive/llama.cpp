@@ -1288,7 +1288,7 @@ bool common_arg_utils::is_autoy(const std::string & value) {
 // example:
 //    input:  value1,"value, with, commas","value with ""escaped"" quotes",value4
 //    output: [value1] [value, with, commas] [value with "escaped" quotes] [value4]
-static std::vector<std::string> parse_csv_row(const std::string& input) {
+std::vector<std::string> common_arg_utils::parse_csv_row(const std::string & input) {
     std::vector<std::string> fields;
     std::string field;
     bool in_quotes = false;
@@ -1330,6 +1330,22 @@ static std::vector<std::string> parse_csv_row(const std::string& input) {
     fields.push_back(std::move(field));
 
     return fields;
+}
+
+std::string common_arg_utils::format_csv_row(const std::vector<std::string> & fields) {
+    std::string output;
+    for (size_t i = 0; i < fields.size(); ++i) {
+        if (i != 0) { output += ','; }
+        const std::string & field = fields[i];
+        const bool quote = field.find_first_of(",\"\r\n") != std::string::npos;
+        if (quote) { output += '"'; }
+        for (const char ch : field) {
+            if (ch == '"') { output += '"'; }
+            output += ch;
+        }
+        if (quote) { output += '"'; }
+    }
+    return output;
 }
 
 common_params_context common_params_parser_init(common_params & params, llama_example ex, void(*print_usage)(int, char **)) {
@@ -2516,6 +2532,14 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
             params.mmproj.path = value;
         }
     ).set_examples(mmproj_examples).set_env("LLAMA_ARG_MMPROJ"));
+    add_opt(common_arg(
+        {"--mmproj-device"}, "NAME",
+        "device/backend to run the multimodal projector on, e.g. CUDA1 "
+        "(default: same GPU backend selected for the model)",
+        [](common_params & params, const std::string & value) {
+            params.mmproj_device = value;
+        }
+    ).set_examples(mmproj_examples).set_env("MTMD_BACKEND_DEVICE"));
     add_opt(common_arg(
         {"-mmu", "--mmproj-url"}, "URL",
         "URL to a multimodal projector file. see tools/mtmd/README.md",

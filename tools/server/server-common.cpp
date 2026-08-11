@@ -14,6 +14,30 @@
 #include <fstream>
 #include <limits>
 
+void server_params_postprocess(common_params & params, bool is_router_server) {
+    if (!is_router_server) {
+        // Embeddings require all tokens to be processed in a single ubatch.
+        // See https://github.com/ggml-org/llama.cpp/issues/12836.
+        if (params.embedding && params.n_batch > params.n_ubatch) {
+            SRV_WRN("embeddings enabled with n_batch (%d) > n_ubatch (%d)\n", params.n_batch, params.n_ubatch);
+            SRV_WRN("setting n_batch = n_ubatch = %d to avoid assertion failure\n", params.n_ubatch);
+            params.n_batch = params.n_ubatch;
+        }
+
+        if (params.n_parallel < 0) {
+            SRV_TRC("%s", "n_parallel is set to auto, using n_parallel = 4 and kv_unified = true\n");
+            params.n_parallel = 4;
+            params.kv_unified = true;
+        }
+    }
+
+    // Keep aliases consistent between router and single-model mode.
+    const std::string model_name = params.model.get_name();
+    if (params.model_alias.empty() && !model_name.empty()) {
+        params.model_alias.insert(model_name);
+    }
+}
+
 json format_error_response(const std::string & message, const enum error_type type) {
     std::string type_str;
     int code = 500;

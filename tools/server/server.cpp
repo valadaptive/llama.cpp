@@ -106,29 +106,7 @@ int llama_server(common_params & params, int argc, char ** argv) {
     // skip device enumeration so the CUDA primary context stays uncreated
     common_params_print_info(params, !is_router_server);
 
-    if (!is_router_server) {
-        // validate batch size for embeddings
-        // embeddings require all tokens to be processed in a single ubatch
-        // see https://github.com/ggml-org/llama.cpp/issues/12836
-        if (params.embedding && params.n_batch > params.n_ubatch) {
-            SRV_WRN("embeddings enabled with n_batch (%d) > n_ubatch (%d)\n", params.n_batch, params.n_ubatch);
-            SRV_WRN("setting n_batch = n_ubatch = %d to avoid assertion failure\n", params.n_ubatch);
-            params.n_batch = params.n_ubatch;
-        }
-
-        if (params.n_parallel < 0) {
-            SRV_TRC("%s", "n_parallel is set to auto, using n_parallel = 4 and kv_unified = true\n");
-
-            params.n_parallel = 4;
-            params.kv_unified = true;
-        }
-    }
-
-    // for consistency between server router mode and single-model mode, we set the same model name as alias
-    auto model_name = params.model.get_name();
-    if (params.model_alias.empty() && !model_name.empty()) {
-        params.model_alias.insert(model_name);
-    }
+    server_params_postprocess(params, is_router_server);
 
     // note: this is guaranteed to out-live ctx_http and tools
     server_mcp mcp_mgr;

@@ -109,6 +109,12 @@ namespace common_arg_utils {
     bool is_truthy(const std::string & value);
     bool is_falsey(const std::string & value);
     bool is_autoy(const std::string & value);
+
+    // Parse/format the CSV syntax accepted by comma-list options such as
+    // --lora, --control-vector and --api-key. Quoted fields may contain commas;
+    // embedded quotes are represented as doubled quotes.
+    std::vector<std::string> parse_csv_row(const std::string & input);
+    std::string format_csv_row(const std::vector<std::string> & fields);
 }
 
 struct common_params_context {

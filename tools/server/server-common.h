@@ -37,6 +37,11 @@ using json = nlohmann::ordered_json;
 
 using raw_buffer = std::vector<uint8_t>;
 
+// Normalize parameters that depend on llama-server's single-model/router mode.
+// Kept separate from common_params_postprocess() because these defaults are
+// server-runtime policy rather than generic argument parsing policy.
+void server_params_postprocess(common_params & params, bool is_router_server);
+
 template <typename T>
 static T json_value(const json & body, const std::string & key, const T & default_value) {
     // Fallback null to default value

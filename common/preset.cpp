@@ -204,8 +204,10 @@ static std::map<std::string, std::map<std::string, std::string>> parse_ini_from_
         // header-line ::= "[" ws ident ws "]" eol
         auto header_line = p.rule("header-line", "[" + ws + p.tag("section-name", p.chars("[^]]")) + ws + "]" + eol);
 
-        // kv-line ::= ident ws "=" ws value eol
-        auto kv_line = p.rule("kv-line", p.tag("key", ident) + ws + "=" + ws + p.tag("value", value) + eol);
+        // kv-line ::= "-"* ident ws "=" ws value eol
+        // Leading dashes are accepted for compatibility with CLI-shaped INI
+        // files; keys are canonicalized before option lookup below.
+        auto kv_line = p.rule("kv-line", p.tag("key", p.zero_or_more(p.literal("-")) + ident) + ws + "=" + ws + p.tag("value", value) + eol);
 
         // comment-line ::= ws comment (newline / EOF)
         auto comment_line = p.rule("comment-line", ws + comment + (newline | p.end()));
@@ -301,7 +303,8 @@ common_presets common_preset_context::load_from_ini(const std::string & path, co
         }
         preset.name = section_name;
         LOG_DBG("loading preset: %s\n", preset.name.c_str());
-        for (const auto & [key, value] : section.second) {
+        for (const auto & [raw_key, value] : section.second) {
+            const std::string key = rm_leading_dashes(raw_key);
             if (key == "version") {
                 // skip version key (reserved for future use)
                 continue;
