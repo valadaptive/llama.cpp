@@ -16,6 +16,9 @@
 #include "common.h"
 #include "fit.h"
 #include "llama.h"
+#include "ggml.h"
+#include "ggml-backend.h"
+#include "gguf.h"
 #include "log.h"
 #include "sampling.h"
 #include "speculative.h"
@@ -25,6 +28,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <cstring>
 #include <cinttypes>
 #include <deque>
 #include <exception>
@@ -44,6 +48,89 @@
 #endif
 
 constexpr int HTTP_POLLING_SECONDS = 1;
+
+namespace {
+
+// Capture context for SERVER_TASK_TYPE_EXTRACT_HIDDENS. The eval callback pools
+// each layer's l_out (residual stream) and stores it keyed by the layer index
+// parsed from the tensor name ("l_out-N"). Keying by index (rather than capture
+// order) is what lets a single code path serve both the single-decode text case
+// and the multi-decode image case: a later decode for the same layer overwrites
+// the earlier one (so the final, post-image decode wins), and only indices <
+// n_layer_keep are kept -- excluding the final logits-output l_out, whose token
+// count varies (0 on a prefill chunk, n_outputs otherwise) and which is not a
+// steerable residual layer.
+struct hidden_capture {
+    int n_embd       = 0;
+    int pool         = 0;  // 0 = mean over tokens, 1 = last token
+    int n_layer_keep = 0;  // keep layer indices [0, n_layer_keep)
+    std::map<int, std::vector<float>> by_layer;
+};
+
+bool extract_hiddens_cb(ggml_tensor * t, bool ask, void * user_data) {
+    auto * cap = (hidden_capture *) user_data;
+    const bool is_l_out = std::strncmp(t->name, "l_out", 5) == 0;
+    if (ask) {
+        return is_l_out; // only interested in the per-layer residual
+    }
+    // keep only a genuine per-token residual: a contiguous F32 [n_embd, n_tok]
+    // matrix (n_tok >= 1) for a layer below the logits layer. The final-norm
+    // output also matches "l_out" but can be [n_embd, 0] on a prefill chunk and
+    // is not a steerable layer, so it is filtered by both the ne[1] and index guards.
+    if (!is_l_out || t->type != GGML_TYPE_F32 || t->ne[0] <= 0 || t->ne[1] <= 0 ||
+        t->ne[2] != 1 || t->ne[3] != 1 || !ggml_is_contiguous(t)) {
+        return true;
+    }
+    int idx = -1;
+    if (t->name[5] == '-') { idx = atoi(t->name + 6); }
+    if (idx < 0 || idx >= cap->n_layer_keep) {
+        return true;
+    }
+
+    const int n_embd = (int) t->ne[0];
+    const int n_tok  = (int) t->ne[1];
+    std::vector<float> buf((size_t) n_embd * n_tok);
+    ggml_backend_tensor_get(t, buf.data(), 0, ggml_nbytes(t));
+
+    std::vector<float> pooled(n_embd, 0.0f);
+    if (cap->pool == 1) {
+        const float * col = buf.data() + (size_t) n_embd * (n_tok - 1);
+        for (int j = 0; j < n_embd; j++) { pooled[j] = col[j]; }
+    } else {
+        for (int it = 0; it < n_tok; it++) {
+            const float * col = buf.data() + (size_t) n_embd * it;
+            for (int j = 0; j < n_embd; j++) { pooled[j] += col[j]; }
+        }
+        for (int j = 0; j < n_embd; j++) { pooled[j] /= (float) n_tok; }
+    }
+    cap->n_embd = n_embd;
+    cap->by_layer[idx] = std::move(pooled);  // overwrite: the last decode for this layer wins
+    return true;
+}
+
+// Read the optional controlvector.layer_start/layer_end band that llama-ui's
+// trainer writes, so a saved vector reloads with its tuned band. Returns false
+// (leaving the args untouched) when the keys are absent, e.g. a stock GGUF.
+bool read_cvec_band(const std::string & path, int & il_start, int & il_end) {
+    if (path.empty()) { return false; }
+    gguf_init_params gp = { /*.no_alloc =*/ true, /*.ctx =*/ nullptr };
+    gguf_context * ctx = gguf_init_from_file(path.c_str(), gp);
+    if (!ctx) { return false; }
+    bool found = false;
+    const int64_t ks = gguf_find_key(ctx, "controlvector.layer_start");
+    const int64_t ke = gguf_find_key(ctx, "controlvector.layer_end");
+    if (ks >= 0 && ke >= 0 &&
+        gguf_get_kv_type(ctx, ks) == GGUF_TYPE_INT32 &&
+        gguf_get_kv_type(ctx, ke) == GGUF_TYPE_INT32) {
+        il_start = gguf_get_val_i32(ctx, ks);
+        il_end   = gguf_get_val_i32(ctx, ke);
+        found = true;
+    }
+    gguf_free(ctx);
+    return found;
+}
+
+} // namespace
 
 static common_speculative_output_limits server_output_limits(const common_params & params) {
     if (!params.mmproj.path.empty()) {
@@ -3524,12 +3611,20 @@ private:
                         break;
                     }
 
+                    // honor an explicit band; otherwise fall back to the band saved
+                    // in the file (full range when neither is present)
+                    int il_start = task.load_cvec_il_start;
+                    int il_end   = task.load_cvec_il_end;
+                    if (il_start <= 0 && il_end <= 0) {
+                        read_cvec_band(task.load_cvec_path, il_start, il_end);
+                    }
+
                     const std::string label = task.load_cvec_path.empty() ? "(in-memory)" : task.load_cvec_path;
                     common_adapter_cvec_info ci;
                     ci.path     = label;
                     ci.scale    = task.load_cvec_scale;
-                    ci.il_start = task.load_cvec_il_start;
-                    ci.il_end   = task.load_cvec_il_end;
+                    ci.il_start = il_start;
+                    ci.il_end   = il_end;
                     ci.data     = std::move(data);
                     cvec_adapters.push_back(std::move(ci));
 
@@ -3540,6 +3635,131 @@ private:
                     auto res = std::make_unique<server_task_result_get_cvec>();
                     res->id = task.id;
                     fill_cvec_result(*res);
+                    queue_results.send(std::move(res));
+                } break;
+            case SERVER_TASK_TYPE_REMOVE_CVECTOR:
+                {
+                    const int id = task.remove_cvec_id;
+                    if (id < 0 || id >= (int) cvec_adapters.size()) {
+                        send_error(task, "control vector index out of range", ERROR_TYPE_INVALID_REQUEST);
+                        break;
+                    }
+                    cvec_adapters.erase(cvec_adapters.begin() + id);
+                    SRV_INF("removed control vector idx=%d (%d remaining)\n", id, (int) cvec_adapters.size());
+
+                    // the shrunk set is re-applied on the next batch via common_set_adapter_cvec;
+                    // when the last vector is removed the merged buffer is empty and the cvec is cleared.
+                    // return the updated list (remaining vectors are renumbered by their new index)
+                    auto res = std::make_unique<server_task_result_get_cvec>();
+                    res->id = task.id;
+                    fill_cvec_result(*res);
+                    queue_results.send(std::move(res));
+                } break;
+            case SERVER_TASK_TYPE_EXTRACT_HIDDENS:
+                {
+                    // forward each example and capture per-layer pooled residuals,
+                    // keyed by layer index. requires the engine idle: we clear the KV
+                    // cache between passes. text and image share everything here except
+                    // how one example is fed to the model (the decode closure below).
+                    bool busy = false;
+                    for (auto & slot : slots) { if (slot.is_processing()) { busy = true; break; } }
+                    if (busy) {
+                        send_error(task, "cannot extract hidden states while the engine is processing", ERROR_TYPE_INVALID_REQUEST);
+                        break;
+                    }
+
+                    const bool   is_image      = !task.extract_images.empty();
+                    const size_t n_examples    = is_image ? task.extract_images.size() : task.extract_seqs.size();
+                    const int    n_layers_full = (int) llama_model_n_layer(model_tgt) - 1;
+                    if (is_image && !mctx) {
+                        send_error(task, "image extraction requires a multimodal model (mmproj)", ERROR_TYPE_INVALID_REQUEST);
+                        break;
+                    }
+                    if (n_examples == 0 || n_layers_full <= 0) {
+                        send_error(task, "no examples to extract", ERROR_TYPE_INVALID_REQUEST);
+                        break;
+                    }
+
+                    hidden_capture cap;
+                    cap.pool         = is_image ? 1 : task.extract_pool;  // images: post-image last token only
+                    cap.n_layer_keep = n_layers_full;                     // exclude the logits-output layer
+                    llama_set_eval_callback(ctx_tgt, extract_hiddens_cb, &cap);
+
+                    const int32_t n_batch = llama_n_batch(ctx_tgt);
+                    // feed example `ex` to the model so the callback fills cap.by_layer; true on success.
+                    auto decode_text = [&](size_t ex) -> bool {
+                        std::vector<llama_token> toks = task.extract_seqs[ex]; // copy: batch needs a mutable ptr
+                        if (toks.empty()) { return false; }
+                        return llama_decode(ctx_tgt, llama_batch_get_one(toks.data(), (int32_t) toks.size())) == 0;
+                    };
+                    auto decode_image = [&](size_t ex) -> bool {
+                        const auto & bytes = task.extract_images[ex];
+                        mtmd::bitmaps bitmaps;
+                        // the helper now returns a wrapper carrying an optional video_ctx
+                        // (kept alive through eval below); for our image corpus it is null.
+                        auto out = mtmd_helper_bitmap_init_from_buf(mctx, bytes.data(), bytes.size(), false);
+                        if (!out.bitmap) { return false; }
+                        mtmd_helper::video_ptr video(out.video_ctx);
+                        mtmd::bitmap bmp(out.bitmap);
+                        bmp.set_id(std::to_string(ex).c_str());
+                        bitmaps.entries.push_back(std::move(bmp));
+                        mtmd_input_text it = { task.extract_mm_prompt.c_str(), /*add_special*/ true, /*parse_special*/ true };
+                        mtmd::input_chunks chunks(mtmd_input_chunks_init());
+                        auto bptr = bitmaps.c_ptr();
+                        if (mtmd_tokenize(mctx, chunks.ptr.get(), &it, bptr.data(), bptr.size()) != 0) { return false; }
+                        llama_pos new_n_past = 0;
+                        return mtmd_helper_eval_chunks(mctx, ctx_tgt, chunks.ptr.get(), 0, /*seq_id*/ 0,
+                                                       n_batch, /*logits_last*/ true, &new_n_past) == 0;
+                    };
+
+                    // a single failing example (undecodable image, over-long sequence)
+                    // is skipped with a warning rather than aborting the whole run. each
+                    // kept example becomes a flat [n_layers_full * n_embd] block.
+                    std::vector<std::vector<float>> kept;
+                    int n_embd_seen = 0, n_skipped = 0;
+                    for (size_t ex = 0; ex < n_examples; ex++) {
+                        llama_memory_clear(llama_get_memory(ctx_tgt), true);
+                        cap.by_layer.clear();
+                        const bool decoded = is_image ? decode_image(ex) : decode_text(ex);
+                        if (!decoded || (int) cap.by_layer.size() != n_layers_full) {
+                            SRV_WRN("extract: skipping example %zu (decode failed or %zu/%d layers)\n",
+                                    ex, cap.by_layer.size(), n_layers_full);
+                            n_skipped++;
+                            continue;
+                        }
+                        std::vector<float> flat((size_t) n_layers_full * cap.n_embd);
+                        bool good = true;
+                        for (int il = 0; il < n_layers_full; il++) {
+                            auto itl = cap.by_layer.find(il);
+                            if (itl == cap.by_layer.end() || (int) itl->second.size() != cap.n_embd) { good = false; break; }
+                            std::copy(itl->second.begin(), itl->second.end(), flat.begin() + (size_t) il * cap.n_embd);
+                        }
+                        if (!good) { SRV_WRN("extract: skipping example %zu (layer shape)\n", ex); n_skipped++; continue; }
+                        n_embd_seen = cap.n_embd;
+                        kept.push_back(std::move(flat));
+                    }
+
+                    llama_set_eval_callback(ctx_tgt, nullptr, nullptr);
+                    // the forward passes wiped the KV cache; invalidate slot prompt caches
+                    llama_memory_clear(llama_get_memory(ctx_tgt), true);
+                    for (auto & slot : slots) { slot.prompt.tokens.clear(); }
+
+                    if (kept.empty()) {
+                        send_error(task, "hidden-state extraction failed (no example could be processed; check lengths/images vs context size)", ERROR_TYPE_SERVER);
+                        break;
+                    }
+                    if (n_skipped) { SRV_INF("extract: used %zu example(s), skipped %d\n", kept.size(), n_skipped); }
+
+                    auto res = std::make_unique<server_task_result_extract_hiddens>();
+                    res->id         = task.id;
+                    res->n_examples = (int) kept.size();
+                    res->n_layers   = n_layers_full;
+                    res->n_embd     = n_embd_seen;
+                    res->data.assign((size_t) res->n_examples * n_layers_full * n_embd_seen, 0.0f);
+                    for (size_t i = 0; i < kept.size(); i++) {
+                        std::copy(kept[i].begin(), kept[i].end(),
+                                  res->data.begin() + (size_t) i * n_layers_full * n_embd_seen);
+                    }
                     queue_results.send(std::move(res));
                 } break;
         }
@@ -6894,6 +7114,38 @@ void server_routes::init_routes() {
             task.load_cvec_scale    = body.value("scale", 1.0f);
             task.load_cvec_il_start = body.value("layer_start", -1);
             task.load_cvec_il_end   = body.value("layer_end", -1);
+            rd.post_task(std::move(task));
+        }
+
+        auto result = rd.next(req.should_stop);
+        if (!result) {
+            GGML_ASSERT(req.should_stop());
+            return res;
+        }
+
+        if (result->is_error()) {
+            res->error(result->to_json());
+            return res;
+        }
+
+        GGML_ASSERT(dynamic_cast<server_task_result_get_cvec*>(result.get()) != nullptr);
+        res->ok(result->to_json());
+        return res;
+    };
+
+    this->post_cvectors_remove = [this](const server_http_req & req) {
+        auto res = create_response();
+        const json body = json::parse(req.body);
+        if (!body.is_object() || !body.contains("id")) {
+            res->error(format_error_response("Request body must be an object with an 'id' field", ERROR_TYPE_INVALID_REQUEST));
+            return res;
+        }
+
+        auto & rd = res->rd;
+        {
+            server_task task(SERVER_TASK_TYPE_REMOVE_CVECTOR);
+            task.id             = rd.get_new_id();
+            task.remove_cvec_id = body.at("id").get<int>();
             rd.post_task(std::move(task));
         }
 
