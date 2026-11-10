@@ -354,26 +354,6 @@ static bool get_hidden_layers(llama_context * ctx, std::vector<llama_token> & to
     return true;
 }
 
-static void export_gguf(const std::vector<struct ggml_tensor *> & v_ctrl, const std::string fname, const std::string model_hint) {
-    struct gguf_context * ctx = gguf_init_empty();
-
-    const std::string arch = "controlvector";
-    gguf_set_val_str(ctx, "general.architecture", arch.c_str());
-    gguf_set_val_str(ctx, (arch + ".model_hint").c_str(), model_hint.c_str());
-    gguf_set_val_i32(ctx, (arch + ".layer_count").c_str(), v_ctrl.size());
-
-    for (size_t i = 0; i < v_ctrl.size(); ++i) {
-        gguf_add_tensor(ctx, v_ctrl[i]);
-        print_debug_tensor(v_ctrl[i]);
-        printf("Added tensor: %s\n", v_ctrl[i]->name);
-    }
-
-    printf("%s: writing file...\n", __func__);
-    gguf_write_to_file(ctx, fname.c_str(), false);
-    printf("%s: wrote file '%s'\n", __func__, fname.c_str());
-    gguf_free(ctx);
-}
-
 /**
  * Load prompt files and completion file.
  * Then format each pair of prompt + completion to make an entry.
@@ -507,10 +487,24 @@ int main(int argc, char ** argv) {
         mean::run(ctx_train.v_diff, ctx_train.v_final);
     }
 
-    // write output vectors to gguf
-    export_gguf(ctx_train.v_final, params.out_file, model_hint);
+    // write output vectors to gguf through the shared control-vector serializer
+    common_control_vector_data output = {
+        ctx_train.n_embd,
+        std::vector<float>(ctx_train.v_final.size() * (size_t) ctx_train.n_embd),
+    };
+    for (size_t il = 0; il < ctx_train.v_final.size(); ++il) {
+        memcpy(output.data.data() + (size_t) il * ctx_train.n_embd,
+               ctx_train.v_final[il]->data,
+               (size_t) ctx_train.n_embd * sizeof(float));
+    }
 
+    std::string write_error;
+    const bool written = common_control_vector_save(output, params.out_file, model_hint, write_error);
     llama_backend_free();
+    if (!written) {
+        fprintf(stderr, "failed to save control vector: %s\n", write_error.c_str());
+        return 1;
+    }
 
     return 0;
 }

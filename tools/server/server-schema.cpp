@@ -235,7 +235,7 @@ std::vector<std::unique_ptr<field>> make_llama_cmpl_schema(const common_params &
             if (!lora.is_array()) {
                 throw std::runtime_error("Error: 'lora' must be an array of objects with 'id' and 'scale' fields");
             }
-            ctx.params.lora = parse_lora_request(lora);
+            ctx.params.lora = parse_adapter_scale_request(lora);
         }));
 
     add((new field_json("cvector"))
@@ -245,7 +245,7 @@ std::vector<std::unique_ptr<field>> make_llama_cmpl_schema(const common_params &
             if (!cvector.is_array()) {
                 throw std::runtime_error("Error: 'cvector' must be an array of objects with 'id' and 'scale' fields");
             }
-            ctx.params.cvector = parse_cvector_request(cvector);
+            ctx.params.cvector = parse_adapter_scale_request(cvector);
         }));
 
     // sequence breakers for DRY

@@ -1439,7 +1439,7 @@ private:
                 ci.scale    = info.strength;
                 ci.il_start = params_base.control_vector_layer_start;
                 ci.il_end   = params_base.control_vector_layer_end;
-                ci.data     = common_control_vector_load({{ 1.0f, info.fname }}); // load unscaled
+                ci.data     = common_control_vector_load({{ 1.0f, info.fname }}, llama_model_n_layer(model_tgt)); // load unscaled
                 if (ci.data.n_embd == -1) {
                     SRV_ERR("failed to load control vector '%s'\n", info.fname.c_str());
                     return false;
@@ -3600,7 +3600,7 @@ private:
                     // resolve the data: in-memory if provided, else load from the file path
                     common_control_vector_data data = task.load_cvec_data.n_embd != -1
                         ? task.load_cvec_data
-                        : common_control_vector_load({{ 1.0f, task.load_cvec_path }});
+                        : common_control_vector_load({{ 1.0f, task.load_cvec_path }}, llama_model_n_layer(model_tgt));
 
                     if (data.n_embd == -1) {
                         send_error(task, "failed to load control vector", ERROR_TYPE_INVALID_REQUEST);
@@ -3697,7 +3697,7 @@ private:
                         mtmd::bitmaps bitmaps;
                         // the helper now returns a wrapper carrying an optional video_ctx
                         // (kept alive through eval below); for our image corpus it is null.
-                        auto out = mtmd_helper_bitmap_init_from_buf(mctx, bytes.data(), bytes.size(), false);
+                        auto out = mtmd_helper_bitmap_init_from_buf(mctx, bytes.data(), bytes.size(), false, init_opt);
                         if (!out.bitmap) { return false; }
                         mtmd_helper::video_ptr video(out.video_ctx);
                         mtmd::bitmap bmp(out.bitmap);
@@ -7011,7 +7011,7 @@ void server_routes::init_routes() {
         {
             server_task task(SERVER_TASK_TYPE_SET_LORA);
             task.id = rd.get_new_id();
-            task.set_lora = parse_lora_request(body);
+            task.set_lora = parse_adapter_scale_request(body);
             rd.post_task(std::move(task));
         }
 

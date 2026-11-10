@@ -147,7 +147,8 @@ bool lora_should_clear_cache(
         const std::vector<common_adapter_lora_info> & current,
         const std::vector<common_adapter_lora_info> & next);
 
-std::map<int, float> parse_lora_request(const json & data);
+// Parse the shared [{ "id": ..., "scale": ... }] adapter request shape.
+std::map<int, float> parse_adapter_scale_request(const json & data);
 
 bool are_lora_equal(
         const std::vector<common_adapter_lora_info> & l1,
@@ -157,8 +158,6 @@ bool are_lora_equal(
 std::vector<size_t> lora_get_enabled_ids(const std::vector<common_adapter_lora_info> & loras);
 
 // control vectors, mirroring the lora helpers above
-std::map<int, float> parse_cvector_request(const json & data);
-
 bool are_cvec_equal(
         const std::vector<common_adapter_cvec_info> & c1,
         const std::vector<common_adapter_cvec_info> & c2);

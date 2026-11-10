@@ -313,17 +313,14 @@ bool lora_should_clear_cache(
         !lora_all_alora(next));
 }
 
-std::map<int, float> parse_lora_request(const json & data) {
-    std::map<int, float> lora;
-
-    // set value
+std::map<int, float> parse_adapter_scale_request(const json & data) {
+    std::map<int, float> adapters;
     for (const auto & entry : data) {
-        int id      = json_value(entry, "id", -1);
-        float scale = json_value(entry, "scale", 0.0f);
-        lora[id] = scale;
+        const int   id    = json_value(entry, "id", -1);
+        const float scale = json_value(entry, "scale", 0.0f);
+        adapters[id] = scale;
     }
-
-    return lora;
+    return adapters;
 }
 
 bool are_lora_equal(
@@ -349,16 +346,6 @@ std::vector<size_t> lora_get_enabled_ids(const std::vector<common_adapter_lora_i
         }
     }
     return enabled_ids;
-}
-
-std::map<int, float> parse_cvector_request(const json & data) {
-    std::map<int, float> cvec;
-    for (const auto & entry : data) {
-        int   id    = json_value(entry, "id", -1);
-        float scale = json_value(entry, "scale", 0.0f);
-        cvec[id] = scale;
-    }
-    return cvec;
 }
 
 bool are_cvec_equal(

@@ -1258,6 +1258,16 @@ struct common_control_vector_load_info {
 // On error, returns {-1, empty}
 common_control_vector_data common_control_vector_load(const std::vector<common_control_vector_load_info> & load_infos, int32_t n_layer);
 
+// Write one direction tensor per layer using the controlvector GGUF format.
+// Optional positive layer bounds are stored as inclusive metadata.
+bool common_control_vector_save(
+        const common_control_vector_data & data,
+        const std::string & path,
+        const std::string & model_hint,
+        std::string & error,
+        int32_t layer_start = -1,
+        int32_t layer_end   = -1);
+
 // A control vector loaded once (unscaled) so its scale (and layer band) can be
 // changed at runtime, the cvec analog of common_adapter_lora_info. il_start /
 // il_end are the inclusive layer band this vector applies to; -1 means the full
