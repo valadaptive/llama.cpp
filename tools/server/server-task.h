@@ -31,6 +31,10 @@ enum server_task_type {
     SERVER_TASK_TYPE_SLOT_ERASE,
     SERVER_TASK_TYPE_GET_LORA,
     SERVER_TASK_TYPE_SET_LORA,
+    SERVER_TASK_TYPE_GET_CVECTOR,
+    SERVER_TASK_TYPE_SET_CVECTOR,
+    SERVER_TASK_TYPE_LOAD_CVECTOR,
+    SERVER_TASK_TYPE_REMOVE_CVECTOR,
     SERVER_TASK_TYPE_TTS,
 };
 
@@ -95,6 +99,8 @@ struct task_params {
     int64_t t_max_predict_ms = -1; // if positive, limit the generation phase to this time limit
 
     std::map<int, float> lora; // mapping adapter ID -> scale
+
+    std::map<int, float> cvector; // per-request control-vector ID -> scale
 
     std::vector<std::string> antiprompt;
     std::vector<std::string> response_fields;
@@ -246,6 +252,29 @@ struct server_task {
 
     // used by SERVER_TASK_TYPE_SET_LORA
     std::map<int, float> set_lora; // mapping adapter ID -> scale
+
+    // used by SERVER_TASK_TYPE_SET_CVECTOR: per-vector scale and (optional) band.
+    // has_range == false leaves the vector's existing band unchanged.
+    struct cvec_set_entry {
+        int     id        = -1;
+        float   scale     = 0.0f;
+        bool    has_range = false;
+        int32_t il_start  = -1;
+        int32_t il_end    = -1;
+    };
+    std::vector<cvec_set_entry> set_cvec;
+
+    // used by SERVER_TASK_TYPE_LOAD_CVECTOR: load from a file path, or from
+    // in-memory data when load_cvec_data.n_embd != -1 (e.g. a freshly-trained vector).
+    // load_cvec_il_start/end give the band (-1 = full range).
+    std::string                load_cvec_path;
+    common_control_vector_data load_cvec_data { -1, {} };
+    float                      load_cvec_scale    = 1.0f;
+    int32_t                    load_cvec_il_start = -1;
+    int32_t                    load_cvec_il_end   = -1;
+
+    // used by SERVER_TASK_TYPE_REMOVE_CVECTOR: index of the vector to unload.
+    int32_t                    remove_cvec_id = -1;
 
     // used by SERVER_TASK_TYPE_TTS
     mtmd_helper::gen_audio::inp tts_inp;
@@ -686,6 +715,22 @@ struct server_task_result_get_lora : server_task_result {
 };
 
 struct server_task_result_apply_lora : server_task_result {
+    virtual json to_json() override;
+};
+
+struct server_task_result_get_cvec : server_task_result {
+    struct cvec {
+        std::string path;
+        float       scale    = 0.0f;
+        int32_t     il_start = -1;  // resolved (1 .. n_layer) for display
+        int32_t     il_end   = -1;
+    };
+    std::vector<cvec> cvecs;
+
+    virtual json to_json() override;
+};
+
+struct server_task_result_apply_cvec : server_task_result {
     virtual json to_json() override;
 };
 

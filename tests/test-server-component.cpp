@@ -408,6 +408,24 @@ static void test_server_prompt_reuse(testing & t) {
 }
 
 static void test_lora_helpers(testing & t) {
+    t.test("control vectors", [](testing & t) {
+        common_adapter_cvec_info cvec;
+        cvec.path     = "a.gguf";
+        cvec.scale    = 0.5f;
+        cvec.il_start = 2;
+        cvec.il_end   = 8;
+        cvec.data     = std::make_shared<common_control_vector_data>();
+        std::vector<common_adapter_cvec_info> lhs = {cvec};
+        auto rhs = lhs;
+        t.assert_true("same configuration", are_cvec_equal(lhs, rhs));
+
+        rhs[0].scale = 1.0f;
+        t.assert_true("different scale", !are_cvec_equal(lhs, rhs));
+        rhs = lhs;
+        rhs[0].data = std::make_shared<common_control_vector_data>();
+        t.assert_true("different data", !are_cvec_equal(lhs, rhs));
+    });
+
     // only pointer identity is used, never dereferenced
     auto * p0 = reinterpret_cast<llama_adapter_lora *>(0x10);
     auto * p1 = reinterpret_cast<llama_adapter_lora *>(0x20);
@@ -420,7 +438,7 @@ static void test_lora_helpers(testing & t) {
     };
 
     t.test("parse_lora_request", [](testing & t) {
-        auto res = parse_lora_request(json::array({
+        auto res = parse_adapter_scale_request(json::array({
             json{{"id", 0}, {"scale", 0.5}},
             json{{"id", 2}, {"scale", 1.0}},
             json{{"id", 0}, {"scale", 0.25}}, // last one wins
@@ -429,7 +447,7 @@ static void test_lora_helpers(testing & t) {
         t.assert_equal("id 0", 0.25f, res.at(0));
         t.assert_equal("id 2", 1.0f,  res.at(2));
 
-        auto defaults = parse_lora_request(json::array({json::object()}));
+        auto defaults = parse_adapter_scale_request(json::array({json::object()}));
         t.assert_equal("default id/scale", 0.0f, defaults.at(-1));
     });
 

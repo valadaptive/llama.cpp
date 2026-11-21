@@ -86,7 +86,9 @@ server_prompt_cache_state * server_prompt_cache::alloc(const server_prompt & pro
     for (auto it = states.begin(); it != states.end(); ++it) {
         const int cur_lcp_len = it->prompt.tokens.get_common_prefix(prompt.tokens);
 
-        if (cur_lcp_len == (int) prompt.tokens.size() && are_lora_equal(it->prompt.lora, prompt.lora)) {
+        if (cur_lcp_len == (int) prompt.tokens.size() &&
+            are_lora_equal(it->prompt.lora, prompt.lora) &&
+            are_cvec_equal(it->prompt.cvec, prompt.cvec)) {
             SRV_TRC("%s", " - prompt is already in the cache, skipping\n");
             return nullptr;
         }
@@ -111,7 +113,9 @@ server_prompt_cache_state * server_prompt_cache::alloc(const server_prompt & pro
     for (auto it = states.begin(); it != states.end();) {
         const int len = it->prompt.tokens.get_common_prefix(prompt.tokens);
 
-        if (len == (int) it->prompt.tokens.size() && are_lora_equal(it->prompt.lora, prompt.lora)) {
+        if (len == (int) it->prompt.tokens.size() &&
+            are_lora_equal(it->prompt.lora, prompt.lora) &&
+            are_cvec_equal(it->prompt.cvec, prompt.cvec)) {
             SRV_TRC(" - removing obsolete cached prompt with length %d\n", len);
 
             it = states.erase(it);
@@ -154,6 +158,7 @@ server_prompt_cache_state * server_prompt_cache::alloc(const server_prompt & pro
             /*.tokens      =*/ prompt.tokens.clone(),
             /*.checkpoints =*/ prompt.checkpoints,
             /*.lora        =*/ prompt.lora,
+            /*.cvec        =*/ prompt.cvec,
         },
         /*.data   =*/ {
             /*.main =*/ std::move(state_data_tgt),
@@ -164,9 +169,17 @@ server_prompt_cache_state * server_prompt_cache::alloc(const server_prompt & pro
     return &states.back();
 }
 
-bool server_prompt_cache::load(server_prompt & prompt, const server_tokens & tokens_new, const std::vector<common_adapter_lora_info> & lora_new, llama_context * ctx_tgt, llama_context * ctx_dft, int32_t id_slot) {
-    // a prompt made with another lora config is cleared before the new one starts, so it counts as empty
-    const bool is_empty = prompt.tokens.empty() || lora_should_clear_cache(prompt.lora, lora_new);
+bool server_prompt_cache::load(
+        server_prompt & prompt,
+        const server_tokens & tokens_new,
+        const std::vector<common_adapter_lora_info> & lora_new,
+        const std::vector<common_adapter_cvec_info> & cvec_new,
+        llama_context * ctx_tgt,
+        llama_context * ctx_dft,
+        int32_t id_slot) {
+    const bool is_empty = prompt.tokens.empty() ||
+        lora_should_clear_cache(prompt.lora, lora_new) ||
+        !are_cvec_equal(prompt.cvec, cvec_new);
 
     int lcp_best = is_empty ? 0 : prompt.tokens.get_common_prefix(tokens_new);
 
@@ -179,8 +192,8 @@ bool server_prompt_cache::load(server_prompt & prompt, const server_tokens & tok
 
     // find the most similar cached prompt, that would also preserve the most context
     for (auto it = states.begin(); it != states.end(); ++it) {
-        if (lora_should_clear_cache(it->prompt.lora, lora_new)) {
-            SRV_TRC("   - prompt with length %7zu, skipping, other lora config\n", it->prompt.tokens.size());
+        if (lora_should_clear_cache(it->prompt.lora, lora_new) || !are_cvec_equal(it->prompt.cvec, cvec_new)) {
+            SRV_TRC("   - prompt with length %7zu, skipping, other adapter config\n", it->prompt.tokens.size());
             continue;
         }
 
@@ -327,7 +340,11 @@ std::vector<int> server_slot_sched::get_free_slots(const std::vector<server_slot
     return res;
 }
 
-server_slot_plan server_slot_sched::select(const std::vector<server_slot_info> & slots, const server_task & task, const std::vector<common_adapter_lora_info> & lora) const {
+server_slot_plan server_slot_sched::select(
+        const std::vector<server_slot_info> & slots,
+        const server_task & task,
+        const std::vector<common_adapter_lora_info> & lora,
+        const std::vector<common_adapter_cvec_info> & cvec) const {
     const server_slot_info * ret = nullptr;
 
     bool update_cache = false;
@@ -377,9 +394,9 @@ server_slot_plan server_slot_sched::select(const std::vector<server_slot_info> &
                 continue;
             }
 
-            // the task would clear this slot, its state cannot be reused with another lora config
-            if (lora_should_clear_cache(slot.prompt->lora, lora)) {
-                SLT_TRC(slot, "%s", " - skipping, other lora config\n");
+            // the task would clear this slot, so its state cannot be reused
+            if (lora_should_clear_cache(slot.prompt->lora, lora) || !are_cvec_equal(slot.prompt->cvec, cvec)) {
+                SLT_TRC(slot, "%s", " - skipping, other adapter config\n");
                 continue;
             }
 

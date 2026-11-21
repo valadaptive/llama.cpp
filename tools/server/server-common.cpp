@@ -315,17 +315,14 @@ bool lora_should_clear_cache(
         !lora_all_alora(next));
 }
 
-std::map<int, float> parse_lora_request(const json & data) {
-    std::map<int, float> lora;
-
-    // set value
+std::map<int, float> parse_adapter_scale_request(const json & data) {
+    std::map<int, float> adapters;
     for (const auto & entry : data) {
-        int id      = json_value(entry, "id", -1);
-        float scale = json_value(entry, "scale", 0.0f);
-        lora[id] = scale;
+        const int   id    = json_value(entry, "id", -1);
+        const float scale = json_value(entry, "scale", 0.0f);
+        adapters[id] = scale;
     }
-
-    return lora;
+    return adapters;
 }
 
 bool are_lora_equal(
@@ -351,6 +348,23 @@ std::vector<size_t> lora_get_enabled_ids(const std::vector<common_adapter_lora_i
         }
     }
     return enabled_ids;
+}
+
+bool are_cvec_equal(
+        const std::vector<common_adapter_cvec_info> & c1,
+        const std::vector<common_adapter_cvec_info> & c2) {
+    if (c1.size() != c2.size()) {
+        return false;
+    }
+    for (size_t i = 0; i < c1.size(); ++i) {
+        if (c1[i].data     != c2[i].data  ||
+            c1[i].scale    != c2[i].scale ||
+            c1[i].il_start != c2[i].il_start ||
+            c1[i].il_end   != c2[i].il_end) {
+            return false;
+        }
+    }
+    return true;
 }
 
 //

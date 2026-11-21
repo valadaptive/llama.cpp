@@ -143,6 +143,10 @@ struct server_routes {
     server_http_context::handler_t post_systemone;
     server_http_context::handler_t get_lora_adapters;
     server_http_context::handler_t post_lora_adapters;
+    server_http_context::handler_t get_cvectors;
+    server_http_context::handler_t post_cvectors;
+    server_http_context::handler_t post_cvectors_load;
+    server_http_context::handler_t post_cvectors_remove;
 
     // to be used in router mode
     json get_model_info() const;

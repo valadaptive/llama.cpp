@@ -10,6 +10,7 @@
 
 #include <array>
 #include <list>
+#include <memory>
 #include <set>
 #include <sstream>
 #include <string>
@@ -1272,6 +1273,23 @@ struct common_control_vector_load_info {
 // Direction layer indices must be in [1, n_layer].
 // On error, returns {-1, empty}
 common_control_vector_data common_control_vector_load(const std::vector<common_control_vector_load_info> & load_infos, int32_t n_layer);
+
+// A loaded, unscaled control vector with runtime scale and layer range.
+struct common_adapter_cvec_info {
+    std::string path;
+    float       scale    = 0.0f;
+    int32_t     il_start = -1;
+    int32_t     il_end   = -1;
+
+    std::shared_ptr<const common_control_vector_data> data;
+};
+
+// Sum the given control vectors (each multiplied by its scale, masked to its own
+// [il_start, il_end] band) and apply the result to the context over the union of
+// those bands. n_layer resolves a -1 band to the full 1 .. n_layer range. An
+// empty or all-zero-scale set clears the control vector. Cheap to call every
+// batch: llama_set_adapter_cvec no-ops when the result is unchanged.
+void common_set_adapter_cvec(struct llama_context * ctx, const std::vector<common_adapter_cvec_info> & cvec, int32_t n_layer);
 
 //
 // Split utils

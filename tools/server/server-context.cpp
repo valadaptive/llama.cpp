@@ -17,6 +17,7 @@
 #include "common.h"
 #include "fit.h"
 #include "llama.h"
+#include "gguf.h"
 #include "log.h"
 #include "sampling.h"
 #include "speculative.h"
@@ -25,6 +26,7 @@
 #include "base64.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <cinttypes>
 #include <deque>
@@ -45,6 +47,36 @@
 #endif
 
 constexpr int HTTP_POLLING_SECONDS = 1;
+
+namespace {
+
+bool cvec_range_valid(int il_start, int il_end, int n_layer) {
+    const int start = il_start > 0 ? il_start : 1;
+    const int end   = il_end   > 0 ? il_end   : n_layer;
+    return start <= end && end <= n_layer;
+}
+
+// Read the optional controlvector.layer_start/layer_end band that llama-ui's trainer writes.
+bool read_cvec_band(const std::string & path, int & il_start, int & il_end) {
+    if (path.empty()) { return false; }
+    gguf_init_params gp = { /*.no_alloc =*/ true, /*.ctx =*/ nullptr };
+    gguf_context * ctx = gguf_init_from_file(path.c_str(), gp);
+    if (!ctx) { return false; }
+    bool found = false;
+    const int64_t ks = gguf_find_key(ctx, "controlvector.layer_start");
+    const int64_t ke = gguf_find_key(ctx, "controlvector.layer_end");
+    if (ks >= 0 && ke >= 0 &&
+        gguf_get_kv_type(ctx, ks) == GGUF_TYPE_INT32 &&
+        gguf_get_kv_type(ctx, ke) == GGUF_TYPE_INT32) {
+        il_start = gguf_get_val_i32(ctx, ks);
+        il_end   = gguf_get_val_i32(ctx, ke);
+        found = true;
+    }
+    gguf_free(ctx);
+    return found;
+}
+
+} // namespace
 
 static common_speculative_output_limits server_output_limits(const common_params & params) {
     if (!params.mmproj.path.empty()) {
@@ -381,8 +413,12 @@ struct server_slot {
         return true;
     }
 
-    bool prompt_load(server_prompt_cache & prompt_cache, const server_tokens & tokens, const std::vector<common_adapter_lora_info> & lora_new) {
-        bool res = prompt_cache.load(prompt, tokens, lora_new, ctx_tgt, ctx_dft, id);
+    bool prompt_load(
+            server_prompt_cache & prompt_cache,
+            const server_tokens & tokens,
+            const std::vector<common_adapter_lora_info> & lora_new,
+            const std::vector<common_adapter_cvec_info> & cvec_new) {
+        bool res = prompt_cache.load(prompt, tokens, lora_new, cvec_new, ctx_tgt, ctx_dft, id);
         if (!res) {
             SLT_WRN(*this, "%s", "failed to load prompt from cache\n");
         }
@@ -399,6 +435,7 @@ struct server_slot {
     }
 
     std::vector<common_adapter_lora_info> lora;
+    std::vector<common_adapter_cvec_info> cvec;
     int32_t alora_invocation_start = -1;
 
     // sampling
@@ -557,7 +594,8 @@ struct server_slot {
 
         return task->type == other_slot.task->type
             && inp_embd.size() == other_slot.inp_embd.size()
-            && are_lora_equal(lora, other_slot.lora);
+            && are_lora_equal(lora, other_slot.lora)
+            && are_cvec_equal(cvec, other_slot.cvec);
     }
 
     // returns -1 if the generation is limitless
@@ -1111,6 +1149,11 @@ private:
 
     common_speculative_ptr spec;
 
+    // control vectors loaded once (unscaled) so their scale and band can be tuned
+    // at runtime; cvec is context-global, so this state is server-wide (not
+    // per-slot). Each vector carries its own layer band (info.il_start/il_end).
+    std::vector<common_adapter_cvec_info> cvec_adapters;
+
     bool add_bos_token = true;
 
     int32_t n_ctx; // total context for all clients / slots
@@ -1350,6 +1393,28 @@ private:
         n_ctx = llama_n_ctx(ctx_tgt);
 
         add_bos_token = llama_vocab_get_add_bos(vocab);
+
+        // keep control vectors loaded (unscaled) for runtime scaling. common_init_from_params
+        // has already applied them at load; we retain the per-file data so SET_CVECTOR can
+        // re-sum with new scales. cvec is context-global, hence one server-wide list.
+        if (!params_base.control_vectors.empty()) {
+            // the CLI --control-vector-layer-range is a single global band shared
+            // by all launch-loaded vectors (-1 = full range, resolved at apply)
+            for (const auto & info : params_base.control_vectors) {
+                common_adapter_cvec_info ci;
+                ci.path     = info.fname;
+                ci.scale    = info.strength;
+                ci.il_start = params_base.control_vector_layer_start;
+                ci.il_end   = params_base.control_vector_layer_end;
+                ci.data     = std::make_shared<common_control_vector_data>(
+                    common_control_vector_load({{ 1.0f, info.fname }}, llama_model_n_layer(model_tgt)));
+                if (ci.data->n_embd == -1) {
+                    SRV_ERR("failed to load control vector '%s'\n", info.fname.c_str());
+                    return false;
+                }
+                cvec_adapters.push_back(std::move(ci));
+            }
+        }
 
         if (has_spec) {
             // spec_mtp doesn't use load a model internally, so we report 0.0 and 1.0 manually
@@ -1841,7 +1906,7 @@ private:
 
         slot.prompt_save(*prompt_cache);
 
-        if (!slot.prompt_load(*prompt_cache, task.tokens, get_task_lora(task))) {
+        if (!slot.prompt_load(*prompt_cache, task.tokens, get_task_lora(task), get_task_cvec(task))) {
             slot.prompt_clear();
         }
 
@@ -1900,6 +1965,33 @@ private:
         return task.params.lora.empty() ? params_base.lora_adapters : construct_lora_list(task.params.lora);
     }
 
+    std::vector<common_adapter_cvec_info> construct_cvec_list(const std::map<int, float> & config) const {
+        std::vector<common_adapter_cvec_info> output = cvec_adapters;
+        for (size_t i = 0; i < output.size(); ++i) {
+            auto it = config.find(i);
+            output[i].scale = (it != config.end()) ? it->second : 0.0f;
+        }
+        return output;
+    }
+
+    std::vector<common_adapter_cvec_info> get_task_cvec(const server_task & task) const {
+        return task.params.cvector.empty() ? cvec_adapters : construct_cvec_list(task.params.cvector);
+    }
+
+    // fill a get-cvec result from the base set, resolving each -1 band to the full
+    // 1 .. n_layer range so clients see concrete numbers
+    void fill_cvec_result(server_task_result_get_cvec & res) const {
+        const int n_layer = llama_model_n_layer(model_tgt);
+        for (const auto & cv : cvec_adapters) {
+            res.cvecs.push_back({
+                cv.path,
+                cv.scale,
+                cv.il_start > 0 ? cv.il_start : 1,
+                cv.il_end   > 0 ? cv.il_end   : n_layer,
+            });
+        }
+    }
+
     bool launch_slot_with_task(server_slot & slot, server_task && task) {
         auto task_loras = get_task_lora(task);
 
@@ -1914,6 +2006,13 @@ private:
             }
         }
         slot.lora = task_loras;
+
+        auto task_cvec = get_task_cvec(task);
+        if (!are_cvec_equal(task_cvec, slot.prompt.cvec)) {
+            SLT_TRC(slot, "clearing cache for control-vector change (%zu vectors)\n", task_cvec.size());
+            slot.prompt.clear();
+        }
+        slot.cvec = std::move(task_cvec);
 
         // if using alora, make sure it's only a single one requested and active
         size_t alora_invocation_start = task.tokens.size();
@@ -1964,6 +2063,7 @@ private:
         }
 
         slot.prompt.lora = slot.lora;
+        slot.prompt.cvec = slot.cvec;
 
         if (!task.tokens.validate(ctx_tgt)) {
             send_error(task, "Prompt contains invalid tokens", ERROR_TYPE_INVALID_REQUEST);
@@ -2982,7 +3082,7 @@ private:
 
                     const int id_task = task.id;
 
-                    const auto plan = slot_sched.select(get_slot_infos(), task, get_task_lora(task));
+                    const auto plan = slot_sched.select(get_slot_infos(), task, get_task_lora(task), get_task_cvec(task));
 
                     server_slot * slot = plan.id_slot == -1 ? nullptr : get_slot_by_id(plan.id_slot);
 
@@ -3370,6 +3470,111 @@ private:
                     res->id = task.id;
                     queue_results.send(std::move(res));
                 } break;
+            case SERVER_TASK_TYPE_GET_CVECTOR:
+                {
+                    auto res = std::make_unique<server_task_result_get_cvec>();
+                    res->id = task.id;
+                    fill_cvec_result(*res);
+                    queue_results.send(std::move(res));
+                } break;
+            case SERVER_TASK_TYPE_SET_CVECTOR:
+                {
+                    const int n_layer = llama_model_n_layer(model_tgt);
+                    bool valid = true;
+                    for (const auto & e : task.set_cvec) {
+                        if (e.id < 0 || e.id >= (int) cvec_adapters.size()) {
+                            send_error(task, "control vector index out of range", ERROR_TYPE_INVALID_REQUEST);
+                            valid = false;
+                            break;
+                        }
+                        if (!std::isfinite(e.scale) || (e.has_range && !cvec_range_valid(e.il_start, e.il_end, n_layer))) {
+                            send_error(task, "invalid control vector scale or layer range", ERROR_TYPE_INVALID_REQUEST);
+                            valid = false;
+                            break;
+                        }
+                    }
+                    if (!valid) {
+                        break;
+                    }
+                    for (const auto & e : task.set_cvec) {
+                        cvec_adapters[e.id].scale = e.scale;
+                        if (e.has_range) {
+                            cvec_adapters[e.id].il_start = e.il_start;
+                            cvec_adapters[e.id].il_end   = e.il_end;
+                        }
+                        SRV_INF("set control vector idx=%d scale=%f band=[%d,%d]\n",
+                                e.id, e.scale, cvec_adapters[e.id].il_start, cvec_adapters[e.id].il_end);
+                    }
+                    // the new config is re-applied on the next batch via common_set_adapter_cvec
+                    auto res = std::make_unique<server_task_result_apply_cvec>();
+                    res->id = task.id;
+                    queue_results.send(std::move(res));
+                } break;
+            case SERVER_TASK_TYPE_LOAD_CVECTOR:
+                {
+                    // resolve the data: in-memory if provided, else load from the file path
+                    common_control_vector_data data = task.load_cvec_data.n_embd != -1
+                        ? task.load_cvec_data
+                        : common_control_vector_load({{ 1.0f, task.load_cvec_path }}, llama_model_n_layer(model_tgt));
+
+                    if (data.n_embd == -1) {
+                        send_error(task, "failed to load control vector", ERROR_TYPE_INVALID_REQUEST);
+                        break;
+                    }
+                    if (data.n_embd != llama_model_n_embd(model_tgt)) {
+                        send_error(task, "control vector n_embd does not match the model", ERROR_TYPE_INVALID_REQUEST);
+                        break;
+                    }
+
+                    // honor an explicit band; otherwise fall back to the band saved
+                    // in the file (full range when neither is present)
+                    int il_start = task.load_cvec_il_start;
+                    int il_end   = task.load_cvec_il_end;
+                    if (il_start <= 0 && il_end <= 0) {
+                        read_cvec_band(task.load_cvec_path, il_start, il_end);
+                    }
+                    if (!std::isfinite(task.load_cvec_scale) || !cvec_range_valid(il_start, il_end, llama_model_n_layer(model_tgt))) {
+                        send_error(task, "invalid control vector scale or layer range", ERROR_TYPE_INVALID_REQUEST);
+                        break;
+                    }
+
+                    const std::string label = task.load_cvec_path.empty() ? "(in-memory)" : task.load_cvec_path;
+                    common_adapter_cvec_info ci;
+                    ci.path     = label;
+                    ci.scale    = task.load_cvec_scale;
+                    ci.il_start = il_start;
+                    ci.il_end   = il_end;
+                    ci.data     = std::make_shared<common_control_vector_data>(std::move(data));
+                    cvec_adapters.push_back(std::move(ci));
+
+                    const auto & loaded = cvec_adapters.back();
+                    SRV_INF("loaded control vector idx=%d scale=%f band=[%d,%d] from %s\n",
+                            (int) cvec_adapters.size() - 1, loaded.scale, loaded.il_start, loaded.il_end, label.c_str());
+
+                    // return the updated list
+                    auto res = std::make_unique<server_task_result_get_cvec>();
+                    res->id = task.id;
+                    fill_cvec_result(*res);
+                    queue_results.send(std::move(res));
+                } break;
+            case SERVER_TASK_TYPE_REMOVE_CVECTOR:
+                {
+                    const int id = task.remove_cvec_id;
+                    if (id < 0 || id >= (int) cvec_adapters.size()) {
+                        send_error(task, "control vector index out of range", ERROR_TYPE_INVALID_REQUEST);
+                        break;
+                    }
+                    cvec_adapters.erase(cvec_adapters.begin() + id);
+                    SRV_INF("removed control vector idx=%d (%d remaining)\n", id, (int) cvec_adapters.size());
+
+                    // the shrunk set is re-applied on the next batch via common_set_adapter_cvec;
+                    // when the last vector is removed the merged buffer is empty and the cvec is cleared.
+                    // return the updated list (remaining vectors are renumbered by their new index)
+                    auto res = std::make_unique<server_task_result_get_cvec>();
+                    res->id = task.id;
+                    fill_cvec_result(*res);
+                    queue_results.send(std::move(res));
+                } break;
         }
 
         return true;
@@ -3585,6 +3790,11 @@ private:
             // TODO @ngxson : alora handling is too messy, need to refactor it to be more clear and maintainable
             // apply lora, only need to do it once per batch
             common_set_adapter_lora(ctx_tgt, slot_batched->lora);
+
+            // apply control vector(s) for this batch. can_batch_with guarantees a
+            // homogeneous cvec across the batch, so the representative slot's is
+            // correct for all. Cheap to call repeatedly: it no-ops when unchanged.
+            common_set_adapter_cvec(ctx_tgt, slot_batched->cvec, llama_model_n_layer(model_tgt));
 
             // if the lora is temporarily disabled for an alora, re-enable it
             // for next time
@@ -6620,7 +6830,7 @@ void server_routes::init_routes() {
         {
             server_task task(SERVER_TASK_TYPE_SET_LORA);
             task.id = rd.get_new_id();
-            task.set_lora = parse_lora_request(body);
+            task.set_lora = parse_adapter_scale_request(body);
             rd.post_task(std::move(task));
         }
 
@@ -6638,6 +6848,141 @@ void server_routes::init_routes() {
         }
 
         GGML_ASSERT(dynamic_cast<server_task_result_apply_lora*>(result.get()) != nullptr);
+        res->ok(result->to_json());
+        return res;
+    };
+
+    this->get_cvectors = [this](const server_http_req & req) {
+        auto res = create_response();
+
+        auto & rd = res->rd;
+        {
+            server_task task(SERVER_TASK_TYPE_GET_CVECTOR);
+            task.id = rd.get_new_id();
+            rd.post_task(std::move(task));
+        }
+
+        auto result = rd.next(req.should_stop);
+        if (!result) {
+            GGML_ASSERT(req.should_stop());
+            return res;
+        }
+
+        if (result->is_error()) {
+            res->error(result->to_json());
+            return res;
+        }
+
+        GGML_ASSERT(dynamic_cast<server_task_result_get_cvec*>(result.get()) != nullptr);
+        res->ok(result->to_json());
+        return res;
+    };
+
+    this->post_cvectors = [this](const server_http_req & req) {
+        auto res = create_response();
+        const json body = json::parse(req.body);
+        if (!body.is_array()) {
+            res->error(format_error_response("Request body must be an array", ERROR_TYPE_INVALID_REQUEST));
+            return res;
+        }
+
+        auto & rd = res->rd;
+        {
+            server_task task(SERVER_TASK_TYPE_SET_CVECTOR);
+            task.id = rd.get_new_id();
+            for (const auto & entry : body) {
+                server_task::cvec_set_entry e;
+                e.id    = entry.value("id", -1);
+                e.scale = entry.value("scale", 0.0f);
+                if (entry.contains("layer_start") || entry.contains("layer_end")) {
+                    e.has_range = true;
+                    e.il_start  = entry.value("layer_start", -1);
+                    e.il_end    = entry.value("layer_end", -1);
+                }
+                task.set_cvec.push_back(e);
+            }
+            rd.post_task(std::move(task));
+        }
+
+        auto result = rd.next(req.should_stop);
+        if (!result) {
+            GGML_ASSERT(req.should_stop());
+            return res;
+        }
+
+        if (result->is_error()) {
+            res->error(result->to_json());
+            return res;
+        }
+
+        GGML_ASSERT(dynamic_cast<server_task_result_apply_cvec*>(result.get()) != nullptr);
+        res->ok(result->to_json());
+        return res;
+    };
+
+    this->post_cvectors_load = [this](const server_http_req & req) {
+        auto res = create_response();
+        const json body = json::parse(req.body);
+        if (!body.is_object() || !body.contains("path")) {
+            res->error(format_error_response("Request body must be an object with a 'path' field", ERROR_TYPE_INVALID_REQUEST));
+            return res;
+        }
+
+        auto & rd = res->rd;
+        {
+            server_task task(SERVER_TASK_TYPE_LOAD_CVECTOR);
+            task.id                 = rd.get_new_id();
+            task.load_cvec_path     = body.at("path").get<std::string>();
+            task.load_cvec_scale    = body.value("scale", 1.0f);
+            task.load_cvec_il_start = body.value("layer_start", -1);
+            task.load_cvec_il_end   = body.value("layer_end", -1);
+            rd.post_task(std::move(task));
+        }
+
+        auto result = rd.next(req.should_stop);
+        if (!result) {
+            GGML_ASSERT(req.should_stop());
+            return res;
+        }
+
+        if (result->is_error()) {
+            res->error(result->to_json());
+            return res;
+        }
+
+        GGML_ASSERT(dynamic_cast<server_task_result_get_cvec*>(result.get()) != nullptr);
+        res->ok(result->to_json());
+        return res;
+    };
+
+    this->post_cvectors_remove = [this](const server_http_req & req) {
+        auto res = create_response();
+        const json body = json::parse(req.body);
+        if (!body.is_object() || !body.contains("id")) {
+            res->error(format_error_response("Request body must be an object with an 'id' field", ERROR_TYPE_INVALID_REQUEST));
+            return res;
+        }
+
+        auto & rd = res->rd;
+        {
+            server_task task(SERVER_TASK_TYPE_REMOVE_CVECTOR);
+            task.id             = rd.get_new_id();
+            task.remove_cvec_id = body.at("id").get<int>();
+            rd.post_task(std::move(task));
+        }
+
+        auto result = rd.next(req.should_stop);
+        if (!result) {
+            GGML_ASSERT(req.should_stop());
+            return res;
+        }
+
+        if (result->is_error()) {
+            res->error(result->to_json());
+            return res;
+        }
+
+        GGML_ASSERT(dynamic_cast<server_task_result_get_cvec*>(result.get()) != nullptr);
         res->ok(result->to_json());
         return res;
     };

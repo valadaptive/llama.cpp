@@ -296,6 +296,10 @@ static int server_run_router(common_params & params, int argc, char ** argv, con
     routes.post_responses_tok_oai      = models_routes->proxy_post;
     routes.get_lora_adapters           = models_routes->proxy_get;
     routes.post_lora_adapters          = models_routes->proxy_post;
+    routes.get_cvectors                = models_routes->proxy_get;
+    routes.post_cvectors               = models_routes->proxy_post;
+    routes.post_cvectors_load          = models_routes->proxy_post;
+    routes.post_cvectors_remove        = models_routes->proxy_post;
     routes.get_slots                   = models_routes->proxy_get;
     routes.post_slots                  = models_routes->proxy_post;
 

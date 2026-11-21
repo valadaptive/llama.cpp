@@ -120,6 +120,7 @@ struct llama_context {
 
     void set_abort_callback(bool (*abort_callback)(void * data), void * abort_callback_data);
 
+
     void set_embeddings (bool value);
     void set_embeddings_nextn(bool value, bool masked);
     void set_embeddings_layer_inp(uint32_t lid, bool enable);
@@ -149,6 +150,13 @@ struct llama_context {
                 int32_t   n_embd,
                 int32_t   il_start,
                 int32_t   il_end);
+
+    bool cvec_is_same(
+            const float * data,
+                 size_t   len,
+                int32_t   n_embd,
+                int32_t   il_start,
+                int32_t   il_end) const;
 
     // process a single ubatch with a specific graph type
     // if memory_context is provided, it will be applied first to the context's memory
@@ -340,6 +348,14 @@ private:
 
     llama_adapter_cvec_ptr  cvec;
     llama_adapter_loras_ptr loras;
+
+    // shadow of the last-applied control vector, so repeated identical
+    // set_adapter_cvec calls (e.g. once per batch in the server) are no-ops
+    // instead of forcing a graph rebuild
+    std::vector<float> cvec_data;
+    int32_t            cvec_n_embd   = 0;
+    int32_t            cvec_il_start = -1;
+    int32_t            cvec_il_end   = -1;
 
     llama_cross cross; // TODO: tmp for handling cross-attention - need something better probably
 

@@ -152,6 +152,11 @@ void server_register_routes(server_http_context & ctx_http, server_routes & rout
     // LoRA adapters hotswap
     ctx_http.get ("/lora-adapters",            server_ex_wrapper(routes.get_lora_adapters));
     ctx_http.post("/lora-adapters",            server_ex_wrapper(routes.post_lora_adapters));
+    // Control vector hotswap
+    ctx_http.get ("/cvectors",                 server_ex_wrapper(routes.get_cvectors));
+    ctx_http.post("/cvectors",                 server_ex_wrapper(routes.post_cvectors));
+    ctx_http.post("/cvectors/load",            server_ex_wrapper(routes.post_cvectors_load));
+    ctx_http.post("/cvectors/remove",          server_ex_wrapper(routes.post_cvectors_remove));
     // Save & load slots
     ctx_http.get ("/slots",                    server_ex_wrapper(routes.get_slots));
     ctx_http.post("/slots/:id_slot",           server_ex_wrapper(routes.post_slots));
