@@ -54,6 +54,8 @@ add_library(${TARGET}
     server-models.h
     server-models-sched.cpp
     server-models-sched.h
+    server-register.cpp
+    server-register.h
 )
 set_target_properties(${TARGET} PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS ON)
 
