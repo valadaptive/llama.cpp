@@ -3,6 +3,8 @@
 #include "common.h"
 #include "llama.h"
 
+#include <atomic>
+#include <memory>
 #include <string>
 #include <unordered_set>
 #include <list>
@@ -35,6 +37,7 @@ enum server_task_type {
     SERVER_TASK_TYPE_SET_CVECTOR,
     SERVER_TASK_TYPE_LOAD_CVECTOR,
     SERVER_TASK_TYPE_REMOVE_CVECTOR,
+    SERVER_TASK_TYPE_EXTRACT_HIDDENS,
     SERVER_TASK_TYPE_TTS,
 };
 
@@ -275,6 +278,30 @@ struct server_task {
 
     // used by SERVER_TASK_TYPE_REMOVE_CVECTOR: index of the vector to unload.
     int32_t                    remove_cvec_id = -1;
+
+    // used by SERVER_TASK_TYPE_EXTRACT_HIDDENS: forward tokenized examples through
+    // a clean, temporary context and capture per-layer residuals. Examples are
+    // packed as independent sequences up to both limits. class/group metadata is
+    // optional; when extract_stream_means is true the server returns class means
+    // instead of retaining every example's states.
+    std::vector<llama_tokens> extract_seqs;
+    std::vector<int32_t>      extract_class_ids;
+    std::vector<int32_t>      extract_group_ids;
+    int32_t                   extract_n_classes      = 1;
+    int32_t                   extract_pool           = 0; // 0 = mean over tokens, 1 = last token
+    int32_t                   extract_batch_tokens   = 512;
+    int32_t                   extract_batch_prompts  = 16;
+    bool                      extract_stream_means   = false;
+    bool                      extract_weight_groups  = false;
+    bool                      extract_include_lora   = true;
+    std::shared_ptr<std::atomic<bool>> extract_cancel;
+
+    // image modality for EXTRACT_HIDDENS: one image file's bytes per example, run
+    // through mtmd with `extract_mm_prompt` (a chat-formatted prompt containing the
+    // media marker). When non-empty, image extraction is used instead of
+    // extract_seqs, capturing the post-image last-token residual (forces pool=last).
+    std::vector<std::vector<uint8_t>> extract_images;
+    std::string                       extract_mm_prompt;
 
     // used by SERVER_TASK_TYPE_TTS
     mtmd_helper::gen_audio::inp tts_inp;
@@ -732,6 +759,35 @@ struct server_task_result_get_cvec : server_task_result {
 
 struct server_task_result_apply_cvec : server_task_result {
     virtual json to_json() override;
+};
+
+struct server_task_result_extract_progress : server_task_result {
+    int processed = 0;
+    int total     = 0;
+
+    virtual json to_json() override {
+        return json {{ "processed", processed }, { "total", total }};
+    }
+};
+
+struct server_task_result_extract_hiddens : server_task_result {
+    int n_examples = 0;
+    int n_layers   = 0;
+    int n_embd     = 0;
+    int n_classes  = 0;
+    std::vector<int32_t> class_counts;
+    std::vector<float> data;      // full mode: [example][layer][embd]
+    std::vector<float> means;     // streaming mode: weighted [class][layer][embd]
+    std::vector<float> flat_means;// streaming mode: unweighted means (sign compatibility)
+
+    virtual json to_json() override {
+        return json {
+            { "n_examples", n_examples },
+            { "n_layers",   n_layers   },
+            { "n_embd",     n_embd     },
+            { "n_classes",  n_classes  },
+        };
+    }
 };
 
 // used exclusively by router mode

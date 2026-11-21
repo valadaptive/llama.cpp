@@ -123,6 +123,8 @@ llama_model_zonos3::graph::graph(const llm_graph_params & params) :
         const auto & layer = model.layers[il];
 
         cur = attn_res_route(layer.attn_res_score, il);
+        res->t_layer_inp[il] = cur;
+
         cur = build_norm(cur, layer.attn_norm, nullptr, LLM_NORM_RMS, il);
         cb(cur, "attn_norm", il);
 
@@ -145,6 +147,9 @@ llama_model_zonos3::graph::graph(const llm_graph_params & params) :
     }
 
     cur = attn_res_route(model.output_res_score, -1);
+    if (final_layer_inp_requested()) {
+        set_final_layer_inp(cur);
+    }
     if (inp_out_ids) {
         cur = ggml_get_rows(ctx0, cur, inp_out_ids);
     }

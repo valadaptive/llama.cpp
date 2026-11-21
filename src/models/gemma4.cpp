@@ -471,6 +471,7 @@ llama_model_gemma4::graph::graph(const llm_graph_params & params) :
         }
 
         cur = build_cvec(cur, il);
+        cur = capture_final_layer_inp(cur, il == n_layer - 1);
         cb(cur, "l_out", il);
 
         // input for next layer

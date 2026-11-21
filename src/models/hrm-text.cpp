@@ -111,6 +111,8 @@ ggml_tensor * llama_model_hrm_text::graph::build_stack(llm_graph_input_attn_kv *
         const int    s     = slot_base + il;
         const auto & layer = model.layers[s];
 
+        res->t_layer_inp[s] = cur;
+
         ggml_tensor * inpSA = cur;
 
         cur = build_norm(cur, nullptr, nullptr, LLM_NORM_RMS, s);
@@ -163,6 +165,7 @@ ggml_tensor * llama_model_hrm_text::graph::build_stack(llm_graph_input_attn_kv *
         cb(cur, "ffn_add", s);
 
         cur = build_cvec(cur, s);
+        cur = capture_final_layer_inp(cur, s == n_layer - 1);
         cb(cur, "l_out", s);
     }
 

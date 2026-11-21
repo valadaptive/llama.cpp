@@ -131,6 +131,13 @@ llama_model_gemma3n::graph::graph(const llm_graph_params & params) :
     // inpL now has shape: [n_embd, n_tokens, n_altup]
 
     for (int il = 0; il < n_layer; ++il) {
+        if ((size_t) il < cparams.embeddings_layer_inp.size() && cparams.embeddings_layer_inp[il]) {
+            // The active AltUp stream is the semantic n_embd-wide input to the layer.
+            res->t_layer_inp[il] = gemma3n_view_2d_slice(ctx0, inpL, i_altup_act);
+            cb(res->t_layer_inp[il], "layer_inp", il);
+            ggml_build_forward_expand(gf, res->t_layer_inp[il]);
+        }
+
         // this block is made to be closely resemble Gemma3p5DecoderLayer on python code
 
         ggml_tensor * cur         = inpL;                    // [n_embd, n_tokens, n_altup]
@@ -262,6 +269,11 @@ llama_model_gemma3n::graph::graph(const llm_graph_params & params) :
         inpL = cur;
     }
     cur = inpL;  // [n_embd, n_tokens, n_altup]
+
+    if (final_layer_inp_requested()) {
+        // Keep the same active AltUp stream used by the other semantic layer taps.
+        set_final_layer_inp(gemma3n_view_2d_slice(ctx0, cur, i_altup_act));
+    }
 
     // cur now has multiple altup(s), we want to merge them back to 1 altup
     {

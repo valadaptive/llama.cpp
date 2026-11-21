@@ -14,7 +14,8 @@
 // vec
 
 ggml_tensor * llama_adapter_cvec::tensor_for(int il) const {
-    if (il < 0 || il < layer_start || il > layer_end || (size_t) il >= tensors.size()) {
+    const int layer = il + 1; // public/GGUF layers are one-based
+    if (il < 0 || layer < layer_start || layer > layer_end || (size_t) il >= tensors.size()) {
         return nullptr;
     }
 
@@ -62,10 +63,10 @@ bool llama_adapter_cvec::init(const llama_model & model) {
         return it->second;
     };
 
-    // make tensors
+    // One control-vector tensor per transformer block. GGUF direction.N maps
+    // to zero-based model block N-1.
     tensors.reserve(hparams.n_layer());
-    tensors.push_back(nullptr); // there's never a tensor for layer 0
-    for (size_t il = 1; il < hparams.n_layer(); il++) {
+    for (size_t il = 0; il < hparams.n_layer(); il++) {
         ggml_backend_buffer_type_t buft = model.select_buft(il);
         ggml_context * ctx = ctx_for_buft(buft);
         if (!ctx) {
@@ -109,6 +110,12 @@ bool llama_adapter_cvec::apply(
         return true;
     }
 
+    if (il_start < 1 || il_end < il_start || il_end > (int32_t) hparams.n_layer()) {
+        LLAMA_LOG_ERROR("%s: control vector layer range must be within 1..%d\n",
+                __func__, (int) hparams.n_layer());
+        return false;
+    }
+
     if (n_embd != (int) hparams.n_embd) {
         LLAMA_LOG_ERROR("%s: control vector n_embd does not match model\n", __func__);
         return false;
@@ -123,12 +130,14 @@ bool llama_adapter_cvec::apply(
     layer_start = il_start;
     layer_end   = il_end;
 
-    for (size_t il = 1; il < hparams.n_layer(); il++) {
+    for (size_t il = 0; il < hparams.n_layer(); il++) {
         assert(tensors[il] != nullptr);
 
-        const size_t off = n_embd * (il - 1); // buffer doesn't have data for layer 0, since it's never present
+        const size_t off = n_embd * il;
         if (off + n_embd <= len) {
             ggml_backend_tensor_set(tensors[il], data + off, 0, n_embd * ggml_element_size(tensors[il]));
+        } else {
+            ggml_backend_tensor_memset(tensors[il], 0, 0, ggml_nbytes(tensors[il]));
         }
     }
 

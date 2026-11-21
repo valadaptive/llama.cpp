@@ -145,7 +145,7 @@ llama_model_muse_spark::graph::graph(const llm_graph_params & params)
         cur = ggml_rms_norm(ctx0, cur, hparams.f_post_norm_eps);
         cb(cur, "attn_post_norm", il);
 
-        if (il == n_layer - 1 && inp_out_ids) {
+        if (il == n_layer - 1 && inp_out_ids && !defer_final_layer_inp_crop(inp_out_ids)) {
             cur   = ggml_get_rows(ctx0,   cur, inp_out_ids);
             inpSA = ggml_get_rows(ctx0, inpSA, inp_out_ids);
         }
@@ -196,6 +196,7 @@ llama_model_muse_spark::graph::graph(const llm_graph_params & params)
                 ggml_mul(ctx0, ffn_inp, model.layers[il].ffn_resid_alpha),
                 ggml_mul(ctx0, cur,     model.layers[il].ffn_resid_beta));
         cur = build_cvec(cur, il);
+        cur = capture_final_layer_inp(cur, il == n_layer - 1);
         cb(cur, "l_out", il);
 
         inpL = cur;

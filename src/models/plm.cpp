@@ -67,6 +67,8 @@ llama_model_plm::graph::graph(const llm_graph_params & params) : llm_graph_conte
     ggml_tensor * inp_out_ids = build_inp_out_ids();
 
     for (int il = 0; il < n_layer; ++il) {
+        res->t_layer_inp[il] = inpL;
+
         ggml_tensor * inpSA = inpL;
 
         // norm
@@ -152,7 +154,7 @@ llama_model_plm::graph::graph(const llm_graph_params & params) : llm_graph_conte
                     model.layers[il].wo, NULL, model.layers[il].wo_s,
                     q_states, k_states, v_states, nullptr, nullptr, nullptr, kq_scale, il);
         }
-        if (il == n_layer - 1 && inp_out_ids) {
+        if (il == n_layer - 1 && inp_out_ids && !defer_final_layer_inp_crop(inp_out_ids)) {
             cur   = ggml_get_rows(ctx0,   cur, inp_out_ids);
             inpSA = ggml_get_rows(ctx0, inpSA, inp_out_ids);
         }
@@ -175,6 +177,7 @@ llama_model_plm::graph::graph(const llm_graph_params & params) : llm_graph_conte
         cur = ggml_add(ctx0, cur, ffn_inp);
 
         cur = build_cvec(cur, il);
+        cur = capture_final_layer_inp(cur, il == n_layer - 1);
         cb(cur, "l_out", il);
 
         // input for next layer

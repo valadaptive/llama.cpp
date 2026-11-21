@@ -310,7 +310,7 @@ llama_model_zaya1::graph::graph(const llama_model & model, const llm_graph_param
         cur = build_cca_block(model, cur, inp_pos, inp, il);
         cb(cur, "attn_out", il);
 
-        if (il == n_layer - 1 && inp_out_ids) {
+        if (il == n_layer - 1 && inp_out_ids && !defer_final_layer_inp_crop(inp_out_ids)) {
             cur          = ggml_get_rows(ctx0, cur,          inp_out_ids);
             residual     = ggml_get_rows(ctx0, residual,     inp_out_ids);
             if (router_state) {
@@ -327,6 +327,7 @@ llama_model_zaya1::graph::graph(const llama_model & model, const llm_graph_param
         cur = zaya1_residual_scale(ctx0, cur, residual, z.ffn_res_hs, layer.ffn_resid_scale, layer.ffn_resid_scale_b);
 
         cur = build_cvec(cur, il);
+        cur = capture_final_layer_inp(cur, il == n_layer - 1);
         cb(cur, "l_out", il);
     }
 

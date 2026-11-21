@@ -1150,14 +1150,33 @@ struct llm_graph_context {
     ggml_context * ctx0 = nullptr;
     ggml_cgraph  * gf   = nullptr;
 
+    // If the final layer input is requested, delay the model's output-row
+    // narrowing until build_cvec() has exposed the complete final block output.
+    mutable ggml_tensor * final_layer_inp_out_ids = nullptr;
+    mutable bool final_layer_inp_captured = false;
+
     llm_graph_context(const llm_graph_params & params);
     virtual ~llm_graph_context() = default;
 
     void cb(ggml_tensor * cur, const char * name, int il) const;
 
+    bool final_layer_inp_requested() const {
+        return (size_t) n_layer < cparams.embeddings_layer_inp.size() &&
+                cparams.embeddings_layer_inp[n_layer];
+    }
+
+    bool defer_final_layer_inp_crop(ggml_tensor * inp_out_ids) const {
+        if (final_layer_inp_requested() && inp_out_ids && !final_layer_inp_captured) {
+            final_layer_inp_out_ids = inp_out_ids;
+            return true;
+        }
+        return false;
+    }
+
     // true when the last layer must be narrowed to the output rows before the nextn hidden state is captured
-    bool crop_before_nextn(const ggml_tensor * inp_out_ids) const {
-        return inp_out_ids != nullptr && (!cparams.embeddings_nextn || cparams.embeddings_nextn_masked);
+    bool crop_before_nextn(ggml_tensor * inp_out_ids) const {
+        const bool crop = inp_out_ids != nullptr && (!cparams.embeddings_nextn || cparams.embeddings_nextn_masked);
+        return crop && !defer_final_layer_inp_crop(inp_out_ids);
     }
 
     // true when the nextn hidden state must be narrowed to the output rows after it is captured
@@ -1172,6 +1191,15 @@ struct llm_graph_context {
     ggml_tensor * build_cvec(
              ggml_tensor * cur,
                      int   il) const;
+
+    // Publish the architecture-defined final block output as semantic tap n_layer.
+    void set_final_layer_inp(ggml_tensor * cur) const;
+
+    // Standard 2-D residual path: publish tap n_layer and restore a row crop
+    // that this model explicitly deferred before finishing its final block.
+    ggml_tensor * capture_final_layer_inp(
+             ggml_tensor * cur,
+                    bool   is_final) const;
 
     // apply the activation-side transform of a Hadamard-folded weight, if any
     ggml_tensor * build_hadamard_input(

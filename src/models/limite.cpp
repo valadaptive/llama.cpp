@@ -118,6 +118,8 @@ llama_model_limite::graph::graph(const llm_graph_params & params) : llm_graph_co
     std::vector<ggml_tensor *> hist(n_layer, nullptr);
 
     for (int il = 0; il < n_layer; ++il) {
+        res->t_layer_inp[il] = inpL;
+
         const auto & layer = model.layers[il];
 
         hist[il] = inpL;
@@ -216,7 +218,7 @@ llama_model_limite::graph::graph(const llm_graph_params & params) : llm_graph_co
             cb(cur, "attn_out", il);
         }
 
-        if (il == n_layer - 1 && inp_out_ids) {
+        if (il == n_layer - 1 && inp_out_ids && !defer_final_layer_inp_crop(inp_out_ids)) {
             cur   = ggml_get_rows(ctx0, cur,   inp_out_ids);
             resid = ggml_get_rows(ctx0, resid, inp_out_ids);
         }
@@ -240,6 +242,7 @@ llama_model_limite::graph::graph(const llm_graph_params & params) : llm_graph_co
         cur = ggml_add(ctx0, ggml_mul(ctx0, ffn_inp, layer.ffn_resid_scale), cur);
 
         cur = build_cvec(cur, il);
+        cur = capture_final_layer_inp(cur, il == n_layer - 1);
         cb(cur, "l_out", il);
 
         inpL = cur;

@@ -138,6 +138,8 @@ llama_model_llama4::graph<iswa>::graph(const llm_graph_params & params) : llm_gr
     ggml_tensor * inp_out_ids = build_inp_out_ids();
 
     for (int il = 0; il < n_layer; ++il) {
+        res->t_layer_inp[il] = inpL;
+
 
         ggml_tensor * inpSA = inpL;
 
@@ -179,7 +181,7 @@ llama_model_llama4::graph<iswa>::graph(const llm_graph_params & params) : llm_gr
                     Qcur, Kcur, Vcur, nullptr, nullptr, nullptr, kq_scale, il);
             cb(cur, "attn_out", il);
         }
-        if (il == n_layer - 1 && inp_out_ids) {
+        if (il == n_layer - 1 && inp_out_ids && !defer_final_layer_inp_crop(inp_out_ids)) {
             cur   = ggml_get_rows(ctx0,   cur, inp_out_ids);
             inpSA = ggml_get_rows(ctx0, inpSA, inp_out_ids);
         }
@@ -234,6 +236,7 @@ llama_model_llama4::graph<iswa>::graph(const llm_graph_params & params) : llm_gr
         cb(cur, "ffn_out", il);
 
         cur = build_cvec(cur, il);
+        cur = capture_final_layer_inp(cur, il == n_layer - 1);
         cb(cur, "l_out", il);
 
         // input for next layer

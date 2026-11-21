@@ -451,6 +451,8 @@ llama_model_deepseek2::graph::graph(const llm_graph_params & params) :
     ggml_tensor * inp_out_ids = build_inp_out_ids();
 
     for (int il = 0; il < n_layer; ++il) {
+        res->t_layer_inp[il] = inpL;
+
         ggml_tensor * inpSA = inpL;
 
         // norm
@@ -668,6 +670,7 @@ llama_model_deepseek2::graph::graph(const llm_graph_params & params) :
         cur = ggml_add(ctx0, cur, ffn_inp);
 
         cur = build_cvec(cur, il);
+        cur = capture_final_layer_inp(cur, il == n_layer - 1);
         cb(cur, "l_out", il);
 
         // input for next layer

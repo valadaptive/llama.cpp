@@ -174,7 +174,7 @@ llama_model_lfm3::graph<decision>::graph(const llm_graph_params & params) :
             cb(cur, "model.layers.{}.post_operator_norm", il);
         }
 
-        if (il == n_layer - 1 && inp_out_ids) {
+        if (il == n_layer - 1 && inp_out_ids && !defer_final_layer_inp_crop(inp_out_ids)) {
             cur      = ggml_get_rows(ctx0, cur, inp_out_ids);
             prev_cur = ggml_get_rows(ctx0, prev_cur, inp_out_ids);
         }
@@ -194,6 +194,7 @@ llama_model_lfm3::graph<decision>::graph(const llm_graph_params & params) :
         cur = ggml_add(ctx0, ffn_out, cur);
 
         cur = build_cvec(cur, il);
+        cur = capture_final_layer_inp(cur, il == n_layer - 1);
         cb(cur, "l_out", il);
     }
 

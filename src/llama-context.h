@@ -125,6 +125,7 @@ struct llama_context {
     void set_embeddings_nextn(bool value, bool masked);
     void set_embeddings_layer_inp(uint32_t lid, bool enable);
     void set_embeddings_layer_inp_dev(bool value);
+    void set_embeddings_layer_inp_callback(llama_embeddings_layer_inp_callback callback, void * user_data);
 
     // whether decode accepts entries whose embd is a row of ctx_other's layer input device buffer
     bool supports_embd_row() const;
@@ -266,6 +267,8 @@ private:
     // from backend into host-side embd_layer_inp buffers
     bool extract_layer_inputs(const llm_graph_result * res, size_t token_offset, size_t n_tokens);
 
+    bool eval_callback(ggml_tensor * tensor, bool ask);
+
     // (re)allocate the device buffer for cparams.embeddings_layer_inp_dev
     void layer_inp_dev_alloc();
 
@@ -378,6 +381,13 @@ private:
     // populated when cparams.output_layer_inp[il] is true
     std::vector<buffer_view<float>> embd_layer_inp;
     std::vector<int32_t> embd_batch_idxs; // extracted index -> original batch index
+
+    llama_embeddings_layer_inp_callback layer_inp_callback = nullptr;
+    void * layer_inp_callback_user_data = nullptr;
+    llm_graph_result * layer_inp_callback_res = nullptr;
+    const llama_ubatch * layer_inp_callback_ubatch = nullptr;
+    std::vector<float> layer_inp_callback_data;
+    std::vector<ggml_tensor *> eval_callback_generic_tensors;
 
     struct sampling_info {
         // !samplers.empty() to check if any samplers are active

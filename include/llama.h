@@ -753,8 +753,8 @@ extern "C" {
     // Apply a loaded control vector to a llama_context, or if data is NULL, clear
     // the currently loaded vector.
     // n_embd should be the size of a single layer's control, and data should point
-    // to an n_embd x n_layers buffer starting from layer 1.
-    // il_start and il_end are the layer range the vector should apply to (both inclusive)
+    // to an n_embd x model_n_layer buffer. Direction/layer N applies after model
+    // block N-1, so the public range is 1..model_n_layer (both inclusive).
     // See llama_control_vector_load in common to load a control vector.
     LLAMA_API int32_t llama_set_adapter_cvec(
             struct llama_context * ctx,
@@ -1198,6 +1198,18 @@ extern "C" {
     // Write the enabled layer inputs to a device buffer [n_layer_inp*n_embd, n_batch] instead of host memory.
     // Row r holds the token at batch index r, layers in ascending layer id order.
     LLAMA_API void llama_set_embeddings_layer_inp_dev(struct llama_context * ctx, bool value);
+
+    // Streaming callback for enabled layer inputs. `data` contains n_tokens rows of n_embd
+    // floats. batch_indices maps each row to its index in the original logical batch, even
+    // when llama.cpp splits or reorders physical ubatches. Data is valid only during the call.
+    typedef void (*llama_embeddings_layer_inp_callback)(
+            int32_t layer, const float * data, int32_t n_embd, int32_t n_tokens,
+            const int32_t * batch_indices, void * user_data);
+
+    // Stream enabled layer inputs as they are evaluated instead of retaining them as graph
+    // outputs. This keeps intermediate memory reusable. Pass NULL to disable streaming.
+    LLAMA_API void llama_set_embeddings_layer_inp_callback(
+            struct llama_context * ctx, llama_embeddings_layer_inp_callback callback, void * user_data);
 
     // Whether decode accepts entries added with llama_batch_ext_add_embd_row()
     // (needs a DFlash/DSpark decoder context whose ctx_other has a layer input device buffer).

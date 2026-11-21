@@ -204,7 +204,8 @@ llama_context::llama_context(
 
     // +1: id n_layer() taps the output of the last layer ("input" of the head)
     cparams.embeddings_layer_inp.resize(hparams.n_layer() + 1, false);
-    cparams.embeddings_layer_inp_dev = false;
+    cparams.embeddings_layer_inp_dev    = false;
+    cparams.embeddings_layer_inp_stream = false;
     cparams.embeddings_nextn_dev     = false;
     cparams.ctx_state_src            = nullptr;
     embd_layer_inp.resize(hparams.n_layer() + 1);
@@ -1453,6 +1454,14 @@ void llama_context::set_embeddings_layer_inp_dev(bool value) {
     layer_inp_dev_alloc();
 }
 
+void llama_context::set_embeddings_layer_inp_callback(
+        llama_embeddings_layer_inp_callback callback, void * user_data) {
+    layer_inp_callback           = callback;
+    layer_inp_callback_user_data = user_data;
+    cparams.embeddings_layer_inp_stream = callback != nullptr;
+    sched_need_reserve = true;
+}
+
 bool llama_context::supports_embd_row() const {
     // the DFlash/DSpark decoder graphs read the device buffer
     if (model.arch != LLM_ARCH_DFLASH) {
@@ -1855,6 +1864,7 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
 
     auto * res = get_gf_res_prev();
     auto * gf  = res->get_gf();
+    layer_inp_callback_res = res;
 
     // the new graph parameters
     // in order to correctly reuse a graph, it's full topology has to be uniquely determined by these parameters
@@ -1876,7 +1886,15 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
         res->reset();
 
         ggml_backend_sched_reset(sched.get());
-        ggml_backend_sched_set_eval_callback(sched.get(), cparams.cb_eval, cparams.cb_eval_user_data);
+        eval_callback_generic_tensors.clear();
+        if (cparams.embeddings_layer_inp_stream) {
+            ggml_backend_sched_set_eval_callback(sched.get(),
+                    [](ggml_tensor * tensor, bool ask, void * user_data) {
+                        return static_cast<llama_context *>(user_data)->eval_callback(tensor, ask);
+                    }, this);
+        } else {
+            ggml_backend_sched_set_eval_callback(sched.get(), cparams.cb_eval, cparams.cb_eval_user_data);
+        }
 
         //const auto t_start_us = ggml_time_us();
 
@@ -1909,6 +1927,7 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
         //LLAMA_LOG_INFO("graph set inputs time: %.3f ms\n", (ggml_time_us() - t_start_us)/1000.0);
     }
 
+    layer_inp_callback_ubatch = &ubatch;
     const auto status = graph_compute(res->get_gf(), ubatch.n_tokens > 1);
     if (status != GGML_STATUS_SUCCESS) {
         LLAMA_LOG_ERROR("%s: failed to compute graph, compute status: %d\n", __func__, status);
@@ -2686,7 +2705,7 @@ uint32_t llama_context::output_reserve(int32_t n_outputs) {
     }
 
     for (bool enabled : cparams.embeddings_layer_inp) {
-        if (enabled && !cparams.embeddings_layer_inp_dev) {
+        if (enabled && !cparams.embeddings_layer_inp_dev && !cparams.embeddings_layer_inp_stream) {
             embd_layer_inp_float_count += (size_t) n_embd * n_batch;
         }
     }
@@ -2758,7 +2777,8 @@ uint32_t llama_context::output_reserve(int32_t n_outputs) {
     offset += embd_nextn.size * sizeof(float);
 
     for (uint32_t il = 0; il < embd_layer_inp.size(); ++il) {
-        if (cparams.embeddings_layer_inp[il] && !cparams.embeddings_layer_inp_dev) {
+        if (cparams.embeddings_layer_inp[il] &&
+                !cparams.embeddings_layer_inp_dev && !cparams.embeddings_layer_inp_stream) {
             embd_layer_inp[il] = buffer_view<float>{(float *) (base + offset), (size_t) n_embd * n_batch};
             offset += embd_layer_inp[il].size * sizeof(float);
         } else {
@@ -2812,9 +2832,57 @@ uint32_t llama_context::output_reserve(int32_t n_outputs) {
     return n_outputs_max;
 }
 
+bool llama_context::eval_callback(ggml_tensor * tensor, bool ask) {
+    bool generic_result = true;
+    bool generic_asked = false;
+    if (cparams.cb_eval) {
+        if (ask) {
+            generic_asked = cparams.cb_eval(tensor, true, cparams.cb_eval_user_data);
+            if (generic_asked) {
+                eval_callback_generic_tensors.push_back(tensor);
+            }
+        } else if (std::find(eval_callback_generic_tensors.begin(), eval_callback_generic_tensors.end(), tensor) !=
+                   eval_callback_generic_tensors.end()) {
+            generic_result = cparams.cb_eval(tensor, false, cparams.cb_eval_user_data);
+        }
+    }
+
+    std::vector<int32_t> layers;
+    if (layer_inp_callback && layer_inp_callback_res) {
+        for (uint32_t il = 0; il < cparams.embeddings_layer_inp.size(); ++il) {
+            if (cparams.embeddings_layer_inp[il] && layer_inp_callback_res->get_layer_inp((int) il) == tensor) {
+                layers.push_back((int32_t) il);
+            }
+        }
+    }
+
+    if (ask) {
+        return generic_asked || !layers.empty();
+    }
+    if (layers.empty()) {
+        return generic_result;
+    }
+    if (!layer_inp_callback_ubatch || tensor->type != GGML_TYPE_F32 || tensor->ne[0] != model.hparams.n_embd ||
+            tensor->ne[1] != layer_inp_callback_ubatch->n_tokens || tensor->ne[2] != 1 || tensor->ne[3] != 1 ||
+            !ggml_is_contiguous(tensor)) {
+        LLAMA_LOG_ERROR("%s: invalid streamed layer input tensor\n", __func__);
+        return false;
+    }
+
+    const auto & ubatch = *layer_inp_callback_ubatch;
+    GGML_ASSERT(ubatch.data && ubatch.data->batch_idxs.size() == ubatch.n_tokens);
+    layer_inp_callback_data.resize(ggml_nelements(tensor));
+    ggml_backend_tensor_get(tensor, layer_inp_callback_data.data(), 0, ggml_nbytes(tensor));
+    for (int32_t layer : layers) {
+        layer_inp_callback(layer, layer_inp_callback_data.data(), (int32_t) tensor->ne[0],
+                (int32_t) tensor->ne[1], ubatch.data->batch_idxs.data(), layer_inp_callback_user_data);
+    }
+    return generic_result;
+}
+
 bool llama_context::extract_layer_inputs(const llm_graph_result * res, size_t token_offset, size_t n_tokens) {
     bool extracted = false;
-    if (cparams.embeddings_layer_inp_dev) {
+    if (cparams.embeddings_layer_inp_dev || cparams.embeddings_layer_inp_stream) {
         return extracted;
     }
     for (uint32_t il = 0; il < cparams.embeddings_layer_inp.size(); ++il) {
@@ -4750,6 +4818,11 @@ bool llama_set_ctx_state_src(llama_context * ctx, llama_context * ctx_src) {
 
 void llama_set_embeddings_layer_inp_dev(llama_context * ctx, bool value) {
     ctx->set_embeddings_layer_inp_dev(value);
+}
+
+void llama_set_embeddings_layer_inp_callback(
+        llama_context * ctx, llama_embeddings_layer_inp_callback callback, void * user_data) {
+    ctx->set_embeddings_layer_inp_callback(callback, user_data);
 }
 
 bool llama_supports_embd_row(const llama_context * ctx) {

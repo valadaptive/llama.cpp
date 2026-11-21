@@ -274,6 +274,10 @@ ggml_tensor * llama_model_inkling2::graph::build_layer(int il, int ip, ggml_tens
         ggml_tensor * messages, const loop_layer * loop) {
     GGML_ASSERT(!messages == !loop);
 
+    // Expose the semantic residual entering this logical layer. This is especially
+    // important for loop passes, where the input is not always the previous layer's output.
+    res->t_layer_inp[il] = cur;
+
     const auto & layer = model.layers[il];
 
     const bool    is_swa       = hparams.is_swa(il);
@@ -415,6 +419,8 @@ ggml_tensor * llama_model_inkling2::graph::build_layer(int il, int ip, ggml_tens
     cb(cur, "ffn_out", il);
 
     cur = ggml_add(ctx0, ffn_inp, cur);
+    cur = build_cvec(cur, il);
+    cur = capture_final_layer_inp(cur, il == n_layer - 1);
     cb(cur, "l_out", il);
 
     return cur;

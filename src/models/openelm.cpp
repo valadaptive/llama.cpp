@@ -64,6 +64,8 @@ llama_model_openelm::graph::graph(const llm_graph_params & params) : llm_graph_c
     ggml_tensor * inp_out_ids = build_inp_out_ids();
 
     for (int il = 0; il < n_layer; ++il) {
+        res->t_layer_inp[il] = inpL;
+
         const int64_t n_head    = hparams.n_head(il);
         const int64_t n_head_kv = hparams.n_head_kv(il);
         const int64_t n_head_qkv = 2*n_head_kv + n_head;
@@ -114,7 +116,7 @@ llama_model_openelm::graph::graph(const llm_graph_params & params) : llm_graph_c
                     model.layers[il].wo, NULL, model.layers[il].wo_s,
                     Qcur, Kcur, Vcur, nullptr, nullptr, nullptr, 1.0f/sqrtf(float(n_embd_head)), il);
         }
-        if (il == n_layer - 1 && inp_out_ids) {
+        if (il == n_layer - 1 && inp_out_ids && !defer_final_layer_inp_crop(inp_out_ids)) {
             residual = ggml_get_rows(ctx0, residual, inp_out_ids);
             cur      = ggml_get_rows(ctx0, cur,      inp_out_ids);
         }
@@ -139,6 +141,7 @@ llama_model_openelm::graph::graph(const llm_graph_params & params) : llm_graph_c
         cur = ggml_add(ctx0, cur, ffn_inp);
 
         cur = build_cvec(cur, il);
+        cur = capture_final_layer_inp(cur, il == n_layer - 1);
         cb(cur, "l_out", il);
 
         inpL = cur;

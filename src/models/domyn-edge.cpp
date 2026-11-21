@@ -83,6 +83,8 @@ llama_model_domyn_edge::graph::graph(const llm_graph_params & params)
     ggml_tensor * inp_out_ids = build_inp_out_ids();
 
     for (int il = 0; il < n_layer; ++il) {
+        res->t_layer_inp[il] = inpL;
+
         const auto &  layer        = model.layers[il];
         const int64_t n_embd_head  = hparams.n_embd_head_k(il);
         const int64_t n_head_il    = hparams.n_head(il);
@@ -121,7 +123,7 @@ llama_model_domyn_edge::graph::graph(const llm_graph_params & params)
         cur = build_norm(cur, layer.attn_post_norm, NULL, LLM_NORM_RMS, il);
         cb(cur, "attn_post_norm", il);
 
-        if (il == n_layer - 1 && inp_out_ids) {
+        if (il == n_layer - 1 && inp_out_ids && !defer_final_layer_inp_crop(inp_out_ids)) {
             cur      = ggml_get_rows(ctx0, cur,      inp_out_ids);
             residual = ggml_get_rows(ctx0, residual, inp_out_ids);
         }
@@ -147,6 +149,7 @@ llama_model_domyn_edge::graph::graph(const llm_graph_params & params)
 
         cur  = ggml_add(ctx0, cur, ffn_inp);
         inpL = build_cvec(cur, il);
+        inpL = capture_final_layer_inp(inpL, il == n_layer - 1);
         cb(inpL, "l_out", il);
     }
 

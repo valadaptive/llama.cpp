@@ -71,6 +71,8 @@ llama_model_jais2::graph::graph(const llm_graph_params & params) : llm_graph_con
     ggml_tensor * inp_out_ids = build_inp_out_ids();
 
     for (int il = 0; il < n_layer; ++il) {
+        res->t_layer_inp[il] = inpL;
+
         // Pre-attention LayerNorm
         cur = build_norm(inpL,
                 model.layers[il].attn_norm,
@@ -95,7 +97,7 @@ llama_model_jais2::graph::graph(const llm_graph_params & params) : llm_graph_con
                     Qcur, Kcur, Vcur, nullptr, nullptr, nullptr, 1.0f/sqrtf(float(n_embd_head)), il);
         }
 
-        if (il == n_layer - 1 && inp_out_ids) {
+        if (il == n_layer - 1 && inp_out_ids && !defer_final_layer_inp_crop(inp_out_ids)) {
             cur  = ggml_get_rows(ctx0,  cur, inp_out_ids);
             inpL = ggml_get_rows(ctx0, inpL, inp_out_ids);
         }
@@ -124,6 +126,7 @@ llama_model_jais2::graph::graph(const llm_graph_params & params) : llm_graph_con
         // Residual connection
         inpL = ggml_add(ctx0, cur, ffn_inp);
         inpL = build_cvec(inpL, il);
+        inpL = capture_final_layer_inp(inpL, il == n_layer - 1);
         cb(inpL, "l_out", il);
     }
 

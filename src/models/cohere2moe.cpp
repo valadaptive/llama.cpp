@@ -172,6 +172,8 @@ llama_model_cohere2moe::graph::graph(const llm_graph_params & params) : llm_grap
 
     // MTP/NextN layers are loaded as extra decoder blocks but not executed in the main pass.
     for (int il = 0; il < n_layer; ++il) {
+        res->t_layer_inp[il] = inpL;
+
 
         cur = build_norm(inpL, model.layers[il].attn_norm, nullptr, cohere2moe_norm_type, il);
         cb(cur, "attn_norm", il);
@@ -250,6 +252,7 @@ llama_model_cohere2moe::graph::graph(const llm_graph_params & params) : llm_grap
         cur = ggml_add(ctx0, cur, attn_out);
 
         cur = build_cvec(cur, il);
+        cur = capture_final_layer_inp(cur, il == n_layer - 1);
         cb(cur, "l_out", il);
 
         inpL = cur;

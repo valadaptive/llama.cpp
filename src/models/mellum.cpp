@@ -144,6 +144,8 @@ llama_model_mellum::graph<iswa>::graph(const llm_graph_params & params) : llm_gr
     ggml_tensor * inp_out_ids = build_inp_out_ids();
 
     for (int il = 0; il < n_layer; ++il) {
+        res->t_layer_inp[il] = inpL;
+
         ggml_tensor * inpSA = inpL;
 
         // norm
@@ -211,6 +213,7 @@ llama_model_mellum::graph<iswa>::graph(const llm_graph_params & params) : llm_gr
         cb(cur, "ffn_out", il);
 
         cur = build_cvec(cur, il);
+        cur = capture_final_layer_inp(cur, il == n_layer - 1);
         cb(cur, "l_out", il);
 
         // input for next layer

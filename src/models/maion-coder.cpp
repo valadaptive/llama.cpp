@@ -99,7 +99,7 @@ llama_model_maion_coder::graph::graph(const llm_graph_params & params) : llm_gra
 
         cur = build_attn(inp_attn, model.layers[il].wo, NULL, model.layers[il].wo_s, Qcur, Kcur, Vcur, nullptr, nullptr, nullptr, kq_scale, il);
 
-        if (il == n_layer - 1 && inp_out_ids) {
+        if (il == n_layer - 1 && inp_out_ids && !defer_final_layer_inp_crop(inp_out_ids)) {
             cur   = ggml_get_rows(ctx0, cur, inp_out_ids);
             inpSA = ggml_get_rows(ctx0, inpSA, inp_out_ids);
         }
@@ -133,6 +133,7 @@ llama_model_maion_coder::graph::graph(const llm_graph_params & params) : llm_gra
         cur = build_norm(cur, model.layers[il].ffn_post_norm, NULL, LLM_NORM_RMS, il);
         cur = ggml_add(ctx0, cur, ffn_inp);
         cur = build_cvec(cur, il);
+        cur = capture_final_layer_inp(cur, il == n_layer - 1);
         inpL = cur;
     }
 

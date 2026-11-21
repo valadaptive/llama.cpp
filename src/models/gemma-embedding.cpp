@@ -89,6 +89,8 @@ llama_model_gemma_embedding::graph::graph(const llm_graph_params & params) :
     ggml_tensor * inp_out_ids = build_inp_out_ids();
 
     for (int il = 0; il < n_layer; ++il) {
+        res->t_layer_inp[il] = inpL;
+
 
         // norm
         cur = build_norm(inpL, model.layers[il].attn_norm, NULL, LLM_NORM_RMS, il);
@@ -123,7 +125,7 @@ llama_model_gemma_embedding::graph::graph(const llm_graph_params & params) :
                     Qcur, Kcur, Vcur, nullptr, nullptr, nullptr, 1.0f, il);
         }
 
-        if (il == n_layer - 1 && inp_out_ids) {
+        if (il == n_layer - 1 && inp_out_ids && !defer_final_layer_inp_crop(inp_out_ids)) {
             cur  = ggml_get_rows(ctx0, cur, inp_out_ids);
             inpL = ggml_get_rows(ctx0, inpL, inp_out_ids);
         }
@@ -153,6 +155,7 @@ llama_model_gemma_embedding::graph::graph(const llm_graph_params & params) :
         cur = ggml_add(ctx0, cur, sa_out);
 
         cur = build_cvec(cur, il);
+        cur = capture_final_layer_inp(cur, il == n_layer - 1);
         cb(cur, "l_out", il);
 
         // input for next layer

@@ -94,6 +94,8 @@ llama_model_cogvlm::graph::graph(const llm_graph_params & params) :
     }
 
     for (int il = 0; il < n_layer; ++il) {
+        res->t_layer_inp[il] = inpL;
+
         // get either the text or image weight tensors
         ggml_tensor *wqkv, *wo, *wo_s;
         ggml_tensor *ffn_gate, *ffn_down, *ffn_up;
@@ -156,6 +158,7 @@ llama_model_cogvlm::graph::graph(const llm_graph_params & params) :
         cb(cur, "ffn_out", il);
 
         cur = build_cvec(cur, il);
+        cur = capture_final_layer_inp(cur, il == n_layer - 1);
         cb(cur, "l_out", il);
 
         // input for next layer

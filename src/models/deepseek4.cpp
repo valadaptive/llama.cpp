@@ -1305,10 +1305,10 @@ llama_model_deepseek4::graph::graph(const llm_graph_params & params) :
         cb(inpL, "l_last", il);
     }
 
-    if ((size_t) n_layer < cparams.embeddings_layer_inp.size() && cparams.embeddings_layer_inp[n_layer]) {
-        res->t_layer_inp[n_layer] = build_hc_mean(inpL);
-        cb(res->t_layer_inp[n_layer], "layer_inp", n_layer);
-        ggml_build_forward_expand(gf, res->t_layer_inp[n_layer]);
+    if (final_layer_inp_requested()) {
+        ggml_tensor * final_inp = build_hc_mean(inpL);
+        set_final_layer_inp(final_inp);
+        cb(final_inp, "layer_inp", n_layer);
     }
 
     ggml_tensor * flat = ggml_reshape_2d(ctx0, inpL, n_embd*hc, n_tokens);

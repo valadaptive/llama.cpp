@@ -27,6 +27,8 @@ llama_model_paddleocr::graph::graph(const llm_graph_params & params) :
     ggml_tensor * inp_out_ids = build_inp_out_ids();
 
     for (int il = 0; il < n_layer; ++il) {
+        res->t_layer_inp[il] = inpL;
+
         ggml_tensor * inpSA = inpL;
 
         // norm
@@ -50,7 +52,7 @@ llama_model_paddleocr::graph::graph(const llm_graph_params & params) :
                     model.layers[il].wo, model.layers[il].wo_b, model.layers[il].wo_s,
                     Qcur, Kcur, Vcur, nullptr, nullptr, nullptr, 1.0f/sqrtf(float(n_embd_head)), il);
         }
-        if (il == n_layer - 1) {
+        if (il == n_layer - 1 && !defer_final_layer_inp_crop(inp_out_ids)) {
             // skip computing output for unused tokens
             cur   = ggml_get_rows(ctx0, cur, inp_out_ids);
             inpSA = ggml_get_rows(ctx0, inpSA, inp_out_ids);
@@ -73,6 +75,7 @@ llama_model_paddleocr::graph::graph(const llm_graph_params & params) :
         cur = ggml_add(ctx0, cur, ffn_inp);
 
         cur = build_cvec(cur, il);
+        cur = capture_final_layer_inp(cur, il == n_layer - 1);
         cb(cur, "l_out", il);
 
         // input for next layer

@@ -204,6 +204,7 @@ llama_model_qwen35::graph::graph(const llm_graph_params & params) :
         cb(cur, "post_ffn", il);
 
         cur = build_cvec(cur, il);
+        cur = capture_final_layer_inp(cur, il == n_layer - 1);
         cb(cur, "l_out", il);
 
         // Input for next layer

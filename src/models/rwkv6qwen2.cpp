@@ -98,6 +98,8 @@ llama_model_rwkv6qwen2::graph::graph(const llm_graph_params & params) : llm_buil
     ggml_tensor * inp_out_ids = build_inp_out_ids();
 
     for (int il = 0; il < n_layer; ++il) {
+        res->t_layer_inp[il] = inpL;
+
         const llama_layer * layer = &model.layers[il];
         inpL = ggml_reshape_3d(ctx0, inpL, n_embd, n_seq_tokens, n_seqs);
 
@@ -124,7 +126,7 @@ llama_model_rwkv6qwen2::graph::graph(const llm_graph_params & params) : llm_buil
         cur     = ggml_reshape_2d(ctx0, cur,     n_embd, n_tokens);
         ffn_inp = ggml_reshape_2d(ctx0, ffn_inp, n_embd, n_tokens);
 
-        if (il == n_layer - 1 && inp_out_ids) {
+        if (il == n_layer - 1 && inp_out_ids && !defer_final_layer_inp_crop(inp_out_ids)) {
             cur     = ggml_get_rows(ctx0, cur,     inp_out_ids);
             ffn_inp = ggml_get_rows(ctx0, ffn_inp, inp_out_ids);
         }
@@ -146,6 +148,7 @@ llama_model_rwkv6qwen2::graph::graph(const llm_graph_params & params) : llm_buil
         cur = ggml_add(ctx0, cur, ffn_inp);
 
         cur = build_cvec(cur, il);
+        cur = capture_final_layer_inp(cur, il == n_layer - 1);
         cb(cur, "l_out", il);
 
         // input for next layer

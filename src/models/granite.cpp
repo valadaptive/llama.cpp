@@ -171,7 +171,7 @@ llama_model_granite::graph::graph(const llm_graph_params & params) : llm_graph_c
             cur, inp_pos, inp_attn,
             n_embd_head, il);
 
-        if (il == n_layer - 1 && inp_out_ids) {
+        if (il == n_layer - 1 && inp_out_ids && !defer_final_layer_inp_crop(inp_out_ids)) {
             cur   = ggml_get_rows(ctx0,   cur, inp_out_ids);
             inpSA = ggml_get_rows(ctx0, inpSA, inp_out_ids);
         }
@@ -301,6 +301,7 @@ ggml_tensor * llama_model_granite::graph::build_layer_ffn(
     cb(cur, "ffn_out", il);
 
     cur = build_cvec(cur, il);
+    cur = capture_final_layer_inp(cur, il == n_layer - 1);
     cb(cur, "l_out", il);
 
     return cur;

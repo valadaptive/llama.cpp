@@ -127,7 +127,7 @@ llama_model_nanbeige::graph::graph(const llm_graph_params & params) :
             cb(cur, "attn_out", il);
         }
 
-        if (il == n_layer - 1 && inp_out_ids) {
+        if (il == n_layer - 1 && inp_out_ids && !defer_final_layer_inp_crop(inp_out_ids)) {
             cur   = ggml_get_rows(ctx0, cur,   inp_out_ids);
             inpSA = ggml_get_rows(ctx0, inpSA, inp_out_ids);
         }
@@ -149,6 +149,7 @@ llama_model_nanbeige::graph::graph(const llm_graph_params & params) :
         cb(cur, "ffn_out", il);
 
         cur = build_cvec(cur, il);
+        cur = capture_final_layer_inp(cur, il == n_layer - 1);
         cb(cur, "l_out", il);
 
         inpL = cur;

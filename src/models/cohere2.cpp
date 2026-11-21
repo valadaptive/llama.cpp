@@ -78,6 +78,8 @@ llama_model_cohere2::graph::graph(const llm_graph_params & params) : llm_graph_c
     ggml_tensor * inp_out_ids = build_inp_out_ids();
 
     for (int il = 0; il < n_layer; ++il) {
+        res->t_layer_inp[il] = inpL;
+
         // UNUSED:
 
         // norm
@@ -103,7 +105,7 @@ llama_model_cohere2::graph::graph(const llm_graph_params & params) : llm_graph_c
                     Qcur, Kcur, Vcur, nullptr, nullptr, nullptr, 1.0f/sqrtf(float(n_embd_head)), il);
         }
 
-        if (il == n_layer - 1 && inp_out_ids) {
+        if (il == n_layer - 1 && inp_out_ids && !defer_final_layer_inp_crop(inp_out_ids)) {
             cur     = ggml_get_rows(ctx0, cur, inp_out_ids);
             inpL    = ggml_get_rows(ctx0, inpL, inp_out_ids);
             ffn_inp = ggml_get_rows(ctx0, ffn_inp, inp_out_ids);
@@ -126,6 +128,7 @@ llama_model_cohere2::graph::graph(const llm_graph_params & params) : llm_graph_c
         cur = ggml_add(ctx0, cur, attn_out);
 
         cur = build_cvec(cur, il);
+        cur = capture_final_layer_inp(cur, il == n_layer - 1);
         cb(cur, "l_out", il);
 
         // input for next layer

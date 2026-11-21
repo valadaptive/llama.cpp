@@ -274,6 +274,8 @@ llama_model_kimi_k3::graph::graph(const llm_graph_params & params) :
     const int64_t  n_embd_latent = hparams.n_expert_latent > 0 ? hparams.n_expert_latent : n_embd;
 
     for (int il = 0; il < n_layer; ++il) {
+        res->t_layer_inp[il] = inpL;
+
         const auto & layer = model.layers[il];
 
         // the residual stream, banked on checkpoint layers and then restarted
@@ -323,6 +325,7 @@ llama_model_kimi_k3::graph::graph(const llm_graph_params & params) :
 
         prefix_sum = ggml_add(ctx0, prefix_sum, cur);
         prefix_sum = build_cvec(prefix_sum, il);
+        prefix_sum = capture_final_layer_inp(prefix_sum, il == n_layer - 1);
         cb(prefix_sum, "l_out", il);
 
         inpL = prefix_sum;

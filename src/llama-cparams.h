@@ -59,6 +59,7 @@ struct llama_cparams {
 
     std::vector<bool> embeddings_layer_inp; // [n_layer()] extract input embeddings for layer
     bool embeddings_layer_inp_dev; // write enabled layer inputs to a device buffer instead of host
+    bool embeddings_layer_inp_stream; // stream enabled layer inputs through the semantic callback
     bool embeddings_nextn_dev;     // write the unmasked h_nextn rows to a device buffer instead of host, see llama_set_embeddings_nextn_dev()
 
     enum llama_context_type ctx_type;

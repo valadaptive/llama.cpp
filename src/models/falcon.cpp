@@ -66,6 +66,8 @@ llama_model_falcon::graph::graph(const llm_graph_params & params) : llm_graph_co
     ggml_tensor * inp_out_ids = build_inp_out_ids();
 
     for (int il = 0; il < n_layer; ++il) {
+        res->t_layer_inp[il] = inpL;
+
         ggml_tensor * attn_norm;
 
         attn_norm = build_norm(inpL,
@@ -103,7 +105,7 @@ llama_model_falcon::graph::graph(const llm_graph_params & params) : llm_graph_co
                     Qcur, Kcur, Vcur, nullptr, nullptr, nullptr, 1.0f/sqrtf(float(n_embd_head)), il);
         }
 
-        if (il == n_layer - 1 && inp_out_ids) {
+        if (il == n_layer - 1 && inp_out_ids && !defer_final_layer_inp_crop(inp_out_ids)) {
             cur       = ggml_get_rows(ctx0,       cur, inp_out_ids);
             inpL      = ggml_get_rows(ctx0,      inpL, inp_out_ids);
             attn_norm = ggml_get_rows(ctx0, attn_norm, inp_out_ids);
@@ -126,6 +128,7 @@ llama_model_falcon::graph::graph(const llm_graph_params & params) : llm_graph_co
         cur = ggml_add(ctx0, cur, inpL);
 
         cur = build_cvec(cur, il);
+        cur = capture_final_layer_inp(cur, il == n_layer - 1);
         cb(cur, "l_out", il);
 
         // input for next layer

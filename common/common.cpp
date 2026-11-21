@@ -2067,7 +2067,7 @@ static common_control_vector_data common_control_vector_load_one(const common_co
             break;
         }
 
-        // extend if necessary - do not store data for layer 0 (it's not used)
+        // Extend as needed; one-based direction.N is stored at zero-based row N-1.
         result.data.resize(std::max(result.data.size(), (size_t) result.n_embd * layer_idx), 0.0f);
 
         const float * src = (const float *) tensor->data;
@@ -2121,6 +2121,59 @@ common_control_vector_data common_control_vector_load(const std::vector<common_c
     }
 
     return result;
+}
+
+bool common_control_vector_save(
+        const common_control_vector_data & data,
+        const std::string & path,
+        const std::string & model_hint,
+        std::string & error,
+        int32_t layer_start,
+        int32_t layer_end) {
+    const int32_t n_embd = data.n_embd;
+    if (n_embd <= 0 || data.data.empty() || data.data.size() % n_embd != 0 || data.data.size() / n_embd > INT32_MAX) {
+        error = "empty or malformed control vector";
+        return false;
+    }
+    const int32_t n_layer = (int32_t) (data.data.size() / n_embd);
+
+    const ggml_init_params params = {
+        /* .mem_size   = */ ggml_tensor_overhead() * n_layer + (size_t) n_embd * n_layer * sizeof(float) + 1024,
+        /* .mem_buffer = */ nullptr,
+        /* .no_alloc   = */ false,
+    };
+    ggml_context * ctx = ggml_init(params);
+    if (!ctx) {
+        error = "ggml_init failed";
+        return false;
+    }
+
+    gguf_context * gguf = gguf_init_empty();
+    const std::string arch = "controlvector";
+    gguf_set_val_str(gguf, "general.architecture", arch.c_str());
+    gguf_set_val_str(gguf, (arch + ".model_hint").c_str(), model_hint.c_str());
+    gguf_set_val_i32(gguf, (arch + ".layer_count").c_str(), n_layer);
+    if (layer_start > 0 && layer_end > 0) {
+        gguf_set_val_i32(gguf, (arch + ".layer_start").c_str(), layer_start);
+        gguf_set_val_i32(gguf, (arch + ".layer_end").c_str(), layer_end);
+    }
+
+    for (int32_t il = 0; il < n_layer; ++il) {
+        ggml_tensor * tensor = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, n_embd);
+        ggml_format_name(tensor, "direction.%d", il + 1);
+        memcpy(tensor->data, data.data.data() + (size_t) il * n_embd, (size_t) n_embd * sizeof(float));
+        gguf_add_tensor(gguf, tensor);
+    }
+
+    const bool ok = gguf_write_to_file(gguf, path.c_str(), false);
+    gguf_free(gguf);
+    ggml_free(ctx);
+    if (!ok) {
+        error = "failed to write " + path;
+        return false;
+    }
+    error.clear();
+    return true;
 }
 
 void common_set_adapter_cvec(struct llama_context * ctx, const std::vector<common_adapter_cvec_info> & cvecs, int32_t n_layer) {

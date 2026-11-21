@@ -356,6 +356,7 @@ llama_model_bailingmoe3::graph::graph(const llm_graph_params & params) :
 
         cur = ggml_add(ctx0, cur, ffn_inp);
         cur = build_cvec(cur, il);
+        cur = capture_final_layer_inp(cur, il == n_layer - 1);
         cb(cur, "l_out", il);
         inpL = cur;
     }

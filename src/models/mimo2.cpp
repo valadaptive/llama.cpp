@@ -166,7 +166,7 @@ llama_model_mimo2::graph::graph(const llm_graph_params & params) : llm_graph_con
             }
         }
 
-        if (il == n_layer - 1 && crop_before_nextn(inp_out_ids) && !extract_final_inp) {
+        if (il == n_layer - 1 && !extract_final_inp && crop_before_nextn(inp_out_ids)) {
             cur   = ggml_get_rows(ctx0,   cur, inp_out_ids);
             inpSA = ggml_get_rows(ctx0, inpSA, inp_out_ids);
         }
@@ -216,7 +216,7 @@ llama_model_mimo2::graph::graph(const llm_graph_params & params) : llm_graph_con
 
     cur = inpL;
     if (extract_final_inp) {
-        res->t_layer_inp[n_layer] = cur;
+        set_final_layer_inp(cur);
         if (crop_before_nextn(inp_out_ids)) {
             cur = ggml_get_rows(ctx0, cur, inp_out_ids);
         }

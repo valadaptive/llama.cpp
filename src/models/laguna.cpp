@@ -188,6 +188,8 @@ llama_model_laguna::graph::graph(const llm_graph_params & params) : llm_graph_co
     const float kq_scale = 1.0f / sqrtf(float(n_embd_head));
 
     for (int il = 0; il < n_layer; ++il) {
+        res->t_layer_inp[il] = inpL;
+
         const int64_t n_head_il   = hparams.n_head(il);
         const int64_t n_head_kv_il = hparams.n_head_kv(il);
 
@@ -258,7 +260,7 @@ llama_model_laguna::graph::graph(const llm_graph_params & params) : llm_graph_co
             cb(cur, "attn_o_proj", il);
         }
 
-        if (il == n_layer - 1 && inp_out_ids) {
+        if (il == n_layer - 1 && inp_out_ids && !defer_final_layer_inp_crop(inp_out_ids)) {
             cur   = ggml_get_rows(ctx0,   cur, inp_out_ids);
             inpSA = ggml_get_rows(ctx0, inpSA, inp_out_ids);
         }
@@ -312,6 +314,7 @@ llama_model_laguna::graph::graph(const llm_graph_params & params) : llm_graph_co
         // No post-ffn norm
         cur = ggml_add(ctx0, cur, ffn_inp);
         cur = build_cvec(cur, il);
+        cur = capture_final_layer_inp(cur, il == n_layer - 1);
         cb(cur, "l_out", il);
 
         inpL = cur;

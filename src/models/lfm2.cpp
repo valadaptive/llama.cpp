@@ -223,7 +223,7 @@ llama_model_lfm2::graph<iswa>::graph(const llm_graph_params & params) :
             cur = build_attn_block(cur, inp_pos, inp_hybrid->get_attn(), il);
         }
 
-        if (il == n_layer - 1 && inp_out_ids) {
+        if (il == n_layer - 1 && inp_out_ids && !defer_final_layer_inp_crop(inp_out_ids)) {
             cur      = ggml_get_rows(ctx0, cur, inp_out_ids);
             prev_cur = ggml_get_rows(ctx0, prev_cur, inp_out_ids);
         }
@@ -240,6 +240,7 @@ llama_model_lfm2::graph<iswa>::graph(const llm_graph_params & params) :
         cur = ggml_add(ctx0, cur, ffn_out);
 
         cur = build_cvec(cur, il);
+        cur = capture_final_layer_inp(cur, il == n_layer - 1);
         cb(cur, "l_out", il);
     }
 
@@ -452,7 +453,7 @@ ggml_tensor * llama_model_lfm2::graph_decision::build_decision_head(
                         Qcur, Kcur, Vcur, nullptr, nullptr, nullptr, 1.0f/sqrtf(float(n_embd_head)), il);
             cb(cur, "kqv_out", il);
 
-            if (il == n_layer - 1 && inp_out_ids) {
+            if (il == n_layer - 1 && inp_out_ids && !defer_final_layer_inp_crop(inp_out_ids)) {
                 cur  = ggml_get_rows(ctx0,  cur, inp_out_ids);
                 inpL = ggml_get_rows(ctx0, inpL, inp_out_ids);
             }

@@ -300,6 +300,8 @@ llama_model_glm4_moe::graph::graph(const llm_graph_params & params) : llm_graph_
 
     // NextN layers are processed by graph_mtp.
     for (int il = 0; il < n_layer; ++il) {
+        res->t_layer_inp[il] = inpL;
+
         ggml_tensor * inpSA = inpL;
 
         // Pre-attention norm
@@ -385,6 +387,7 @@ llama_model_glm4_moe::graph::graph(const llm_graph_params & params) : llm_graph_
         cur = ggml_add(ctx0, cur, ffn_inp);
 
         cur = build_cvec(cur, il);
+        cur = capture_final_layer_inp(cur, il == n_layer - 1);
         cb(cur, "l_out", il);
 
         // input for next layer

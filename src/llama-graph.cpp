@@ -1605,7 +1605,8 @@ void llm_graph_result::set_outputs(const llm_graph_params & params) {
     }
     {
         const auto & embeddings_layer_inp = params.cparams.embeddings_layer_inp;
-        for (size_t il = 0; il < embeddings_layer_inp.size() && !params.cparams.embeddings_layer_inp_dev; ++il) {
+        for (size_t il = 0; il < embeddings_layer_inp.size() &&
+                !params.cparams.embeddings_layer_inp_dev && !params.cparams.embeddings_layer_inp_stream; ++il) {
             if (embeddings_layer_inp[il]) {
                 GGML_ASSERT(t_layer_inp[il] != nullptr && "layer input tensor is null");
                 ggml_set_output(t_layer_inp[il]);
@@ -1742,6 +1743,30 @@ ggml_tensor * llm_graph_context::build_cvec(
          ggml_tensor * cur,
                  int   il) const {
     return cvec->apply_to(ctx0, cur, il);
+}
+
+void llm_graph_context::set_final_layer_inp(ggml_tensor * cur) const {
+    GGML_ASSERT(final_layer_inp_requested());
+    GGML_ASSERT(cur->type == GGML_TYPE_F32);
+    GGML_ASSERT(cur->ne[0] == n_embd && cur->ne[1] == n_tokens && cur->ne[2] == 1 && cur->ne[3] == 1);
+
+    res->t_layer_inp[n_layer] = cur;
+    ggml_build_forward_expand(gf, cur);
+    final_layer_inp_captured = true;
+}
+
+ggml_tensor * llm_graph_context::capture_final_layer_inp(
+         ggml_tensor * cur,
+                bool   is_final) const {
+    if (!is_final || !final_layer_inp_requested()) {
+        return cur;
+    }
+
+    set_final_layer_inp(cur);
+    if (final_layer_inp_out_ids) {
+        cur = ggml_get_rows(ctx0, cur, final_layer_inp_out_ids);
+    }
+    return cur;
 }
 
 ggml_tensor * llm_graph_context::build_hadamard_input(

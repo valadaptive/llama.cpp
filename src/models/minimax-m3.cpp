@@ -601,7 +601,7 @@ llama_model_minimax_m3::graph::graph(const llm_graph_params & params) : llm_grap
     }
 
     if (extract_last) {
-        res->t_layer_inp[n_layer] = inpL;
+        set_final_layer_inp(inpL);
         if (inp_out_ids) {
             inpL = ggml_get_rows(ctx0, inpL, inp_out_ids);
         }

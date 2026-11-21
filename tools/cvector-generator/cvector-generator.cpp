@@ -67,9 +67,9 @@ struct callback_data {
     std::vector<struct ggml_tensor *> v_neg; // vector of matrices of size [n_embd, n_tokens]
     std::vector<struct ggml_tensor *> v_diff_filtered;   // vector of matrices of size [n_embd, n_nonzero_rows]. NOTE: n_nonzero_rows maybe different for each layer
 
-    // save a tensor into either v_pos or v_neg (decided by is_eval_pos)
-    void save_tensor_for_layer(struct ggml_tensor * t) {
-        GGML_ASSERT(t->type == GGML_TYPE_F32);
+    // Save a canonical streamed block output into either v_pos or v_neg.
+    void save_tensor_for_layer(int layer, const float * data, int n_embd, int n_rows) {
+        GGML_ASSERT(layer >= 1 && layer <= n_layers);
 
         if (ctx_ggml == nullptr) {
             // alloc a new ctx_ggml if needed
@@ -79,26 +79,23 @@ struct callback_data {
                 /*.no_alloc   =*/ true,
             };
             ctx_ggml = ggml_init(params_ggml);
+            v_pos.resize(n_layers, nullptr);
+            v_neg.resize(n_layers, nullptr);
         }
 
-        // copy tensor data
-        auto n_bytes = ggml_nbytes(t);
-        struct ggml_tensor * t_layer = ggml_new_tensor_2d(ctx_ggml, t->type, t->ne[0], t->ne[1]);
+        const size_t n_bytes = (size_t) n_embd * n_rows * sizeof(float);
+        struct ggml_tensor * t_layer = ggml_new_tensor_2d(ctx_ggml, GGML_TYPE_F32, n_embd, n_rows);
         t_layer->data = malloc(n_bytes); // TODO @ngxson : get rid of this malloc somehow
-        ggml_backend_tensor_get(t, t_layer->data, 0, n_bytes);
-        ggml_set_name(t_layer, ggml_get_name(t));
-        //print_debug_tensor(t_layer);
+        memcpy(t_layer->data, data, n_bytes);
+        ggml_format_name(t_layer, "block_out-%d", layer);
 
-        if (is_eval_pos) {
-            v_pos.push_back(t_layer);
-        } else {
-            v_neg.push_back(t_layer);
-        }
+        auto & dst = is_eval_pos ? v_pos : v_neg;
+        GGML_ASSERT(dst[layer - 1] == nullptr);
+        dst[layer - 1] = t_layer;
     }
 
     // calculate diff (v_pos - v_neg) and place the result back to v_pos
     // all zero rows in the diff tensor will also be removed
-    // NOTE: final layer is ignored. we only have (n_layers - 1) to process
     std::vector<struct ggml_tensor *> calc_diff() {
         for (float il = 0; il < v_pos.size(); il++) {
             float * a = (float *) v_pos[il]->data;
@@ -188,9 +185,8 @@ struct train_context {
     std::vector<std::string> positive_entries;
     std::vector<std::string> negative_entries;
 
-    // each element of the vector correspond to one layer
-    // NOTE: the last layer is discard. therefore, we will have (n_layers - 1) elements here
-    // NOTE (2): v_diff is transposed from v_diff_tmp
+    // each element of the vector corresponds to one transformer block
+    // v_diff is transposed from v_diff_tmp
     std::vector<struct ggml_tensor *> v_diff;  // vector of matrices of size [m, n_embd] where m ~ n_tokens * n_completions (v_diff contains no zero-rows)
     std::vector<struct ggml_tensor *> v_final; // vector of vectors of size [n_embd] to be written to file
 
@@ -202,12 +198,12 @@ struct train_context {
         n_embd = n_embd_;
         n_layers = n_layers_;
         struct ggml_init_params params_ggml = {
-            /*.mem_size   =*/ ggml_tensor_overhead() * (n_layers - 1) * 2u,
+            /*.mem_size   =*/ ggml_tensor_overhead() * n_layers * 2u,
             /*.mem_buffer =*/ NULL,
             /*.no_alloc   =*/ true,
         };
         ctx_ggml = ggml_init(params_ggml);
-        for (int il = 0; il < n_layers - 1; il++) {
+        for (int il = 0; il < n_layers; il++) {
             std::vector<uint8_t> empty;
             v_diff_tmp.push_back(empty);
             auto t = ggml_new_tensor_1d(ctx_ggml, GGML_TYPE_F32, n_embd);
@@ -218,8 +214,8 @@ struct train_context {
 
     // add new rows into existing tensor in v_diff_tmp
     void concat_diff_tmp(const std::vector<struct ggml_tensor *> & diff_filtered) {
-        GGML_ASSERT((int) diff_filtered.size() == n_layers - 1);
-        for (int il = 0; il < n_layers - 1; il++) {
+        GGML_ASSERT((int) diff_filtered.size() == n_layers);
+        for (int il = 0; il < n_layers; il++) {
             auto t = diff_filtered[il];
             auto & diff_tmp = v_diff_tmp[il];
             size_t curr_size = diff_tmp.size();
@@ -232,7 +228,7 @@ struct train_context {
     // TODO @ngxson : maybe add option NOT to transpose v_diff; will be useful for "mean" method
     void build_v_diff(bool transpose) {
         printf("build_v_diff\n");
-        for (int il = 0; il < n_layers - 1; il++) {
+        for (int il = 0; il < n_layers; il++) {
             auto & diff_tmp = v_diff_tmp[il];
             int n_elem = diff_tmp.size() / sizeof(float);
             GGML_ASSERT(n_elem % n_embd == 0);
@@ -326,22 +322,14 @@ static std::vector<std::string> ctrlvec_load_prompt_file(std::string path, bool 
 
 //////////////////////////////////////////////////
 
-static bool cb_eval(struct ggml_tensor * t, bool ask, void * user_data) {
+static void layer_input_callback(
+        int32_t layer, const float * data, int32_t n_embd, int32_t n_tokens,
+        const int32_t * batch_indices, void * user_data) {
+    GGML_UNUSED(batch_indices);
     auto * cb_data = (callback_data *) user_data;
-    static const char * l_out_name = "l_out";
-    const bool is_l_out = strncmp(t->name, l_out_name, strlen(l_out_name)) == 0;
-
-    if (ask) {
-        return is_l_out;
+    if (n_tokens == cb_data->n_tokens) {
+        cb_data->save_tensor_for_layer(layer, data, n_embd, n_tokens);
     }
-
-    if (!is_l_out || t->ne[1] != cb_data->n_tokens) {
-        return true;
-    }
-
-    // save the tensor to current context
-    cb_data->save_tensor_for_layer(t);
-    return true;
 }
 
 static bool get_hidden_layers(llama_context * ctx, std::vector<llama_token> & tokens) {
@@ -352,26 +340,6 @@ static bool get_hidden_layers(llama_context * ctx, std::vector<llama_token> & to
         return false;
     }
     return true;
-}
-
-static void export_gguf(const std::vector<struct ggml_tensor *> & v_ctrl, const std::string fname, const std::string model_hint) {
-    struct gguf_context * ctx = gguf_init_empty();
-
-    const std::string arch = "controlvector";
-    gguf_set_val_str(ctx, "general.architecture", arch.c_str());
-    gguf_set_val_str(ctx, (arch + ".model_hint").c_str(), model_hint.c_str());
-    gguf_set_val_i32(ctx, (arch + ".layer_count").c_str(), v_ctrl.size());
-
-    for (size_t i = 0; i < v_ctrl.size(); ++i) {
-        gguf_add_tensor(ctx, v_ctrl[i]);
-        print_debug_tensor(v_ctrl[i]);
-        printf("Added tensor: %s\n", v_ctrl[i]->name);
-    }
-
-    printf("%s: writing file...\n", __func__);
-    gguf_write_to_file(ctx, fname.c_str(), false);
-    printf("%s: wrote file '%s'\n", __func__, fname.c_str());
-    gguf_free(ctx);
 }
 
 /**
@@ -416,10 +384,6 @@ int main(int argc, char ** argv) {
 
     callback_data cb_data;
 
-    // pass the callback to the backend scheduler
-    // it will be executed for each node during the graph computation
-    params.cb_eval = cb_eval;
-    params.cb_eval_user_data = &cb_data;
     params.warmup = false;
 
     llama_print_build_info(llama_version());
@@ -435,6 +399,10 @@ int main(int argc, char ** argv) {
     // int n_ctx = llama_n_ctx(ctx);
     int n_layers = llama_model_n_layer(model);
     int n_embd = llama_model_n_embd(model);
+    for (int layer = 1; layer <= n_layers; ++layer) {
+        llama_set_embeddings_layer_inp(ctx, (uint32_t) layer, true);
+    }
+    llama_set_embeddings_layer_inp_callback(ctx, layer_input_callback, &cb_data);
 
     // get model hint param (a.k.a model arch name)
     char model_hint[128];
@@ -507,10 +475,24 @@ int main(int argc, char ** argv) {
         mean::run(ctx_train.v_diff, ctx_train.v_final);
     }
 
-    // write output vectors to gguf
-    export_gguf(ctx_train.v_final, params.out_file, model_hint);
+    // write output vectors to gguf through the shared control-vector serializer
+    common_control_vector_data output = {
+        ctx_train.n_embd,
+        std::vector<float>(ctx_train.v_final.size() * (size_t) ctx_train.n_embd),
+    };
+    for (size_t il = 0; il < ctx_train.v_final.size(); ++il) {
+        memcpy(output.data.data() + (size_t) il * ctx_train.n_embd,
+               ctx_train.v_final[il]->data,
+               (size_t) ctx_train.n_embd * sizeof(float));
+    }
 
+    std::string write_error;
+    const bool written = common_control_vector_save(output, params.out_file, model_hint, write_error);
     llama_backend_free();
+    if (!written) {
+        fprintf(stderr, "failed to save control vector: %s\n", write_error.c_str());
+        return 1;
+    }
 
     return 0;
 }

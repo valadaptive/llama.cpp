@@ -620,12 +620,19 @@ llama_model_xing4_0::graph::graph(const llama_model & model, const llm_graph_par
     auto * inp_attn_k = build_attn_inp_k();
 
     ggml_tensor * inp_out_ids = build_inp_out_ids();
+    const bool extract_final_inp = final_layer_inp_requested();
 
     inpL = ggml_reshape_3d(ctx0, inp, n_embd, 1, n_tokens);
     inpL = ggml_repeat_4d(ctx0, inpL, n_embd, hc, n_tokens, 1);
     cb(inpL, "hc_init", -1);
 
     for (int il = 0; il < n_layer; ++il) {
+        if ((size_t) il < cparams.embeddings_layer_inp.size() && cparams.embeddings_layer_inp[il]) {
+            res->t_layer_inp[il] = xing4_0_hc_mean(ctx0, inpL);
+            cb(res->t_layer_inp[il], "layer_inp", il);
+            ggml_build_forward_expand(gf, res->t_layer_inp[il]);
+        }
+
         const auto & layer = model.layers[il];
 
         ggml_tensor * residual = inpL;
@@ -723,7 +730,7 @@ llama_model_xing4_0::graph::graph(const llama_model & model, const llm_graph_par
                 Qcur, Kcur, Vcur, nullptr, nullptr, layer.wv_b, kq_scale, il);
         cb(cur, "attn_out", il);
 
-        if (il == n_layer - 1 && inp_out_ids && (!cparams.embeddings_nextn || cparams.embeddings_nextn_masked)) {
+        if (il == n_layer - 1 && inp_out_ids && !extract_final_inp && (!cparams.embeddings_nextn || cparams.embeddings_nextn_masked)) {
             cur      = ggml_get_rows(ctx0, cur, inp_out_ids);
             residual = ggml_reshape_3d(ctx0,
                     ggml_get_rows(ctx0, ggml_reshape_2d(ctx0, residual, n_embd*hc, n_tokens), inp_out_ids),
@@ -800,6 +807,13 @@ llama_model_xing4_0::graph::graph(const llama_model & model, const llm_graph_par
     // average the residual streams -> single stream for the head
     cur = xing4_0_hc_mean(ctx0, cur);
     cb(cur, "hc_mean", -1);
+
+    if (extract_final_inp) {
+        set_final_layer_inp(cur);
+        if (inp_out_ids && (!cparams.embeddings_nextn || cparams.embeddings_nextn_masked)) {
+            cur = ggml_get_rows(ctx0, cur, inp_out_ids);
+        }
+    }
 
     cur = build_norm(cur, model.output_norm, nullptr, LLM_NORM_RMS, -1);
     cb(cur, "h_nextn", -1);

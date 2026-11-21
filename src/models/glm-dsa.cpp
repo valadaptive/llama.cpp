@@ -242,6 +242,8 @@ llama_model_glm_dsa::graph::graph(const llm_graph_params & params) :
     // See https://huggingface.co/zai-org/GLM-5.2/blob/main/config.json#L30
     ggml_tensor * prev_top_k = nullptr;
     for (int il = 0; il < n_layer; ++il) {
+        res->t_layer_inp[il] = inpL;
+
         ggml_tensor * inpSA = inpL;
 
         // norm
@@ -454,6 +456,7 @@ llama_model_glm_dsa::graph::graph(const llm_graph_params & params) :
         cur = ggml_add(ctx0, cur, ffn_inp);
 
         cur = build_cvec(cur, il);
+        cur = capture_final_layer_inp(cur, il == n_layer - 1);
         cb(cur, "l_out", il);
 
         // input for next layer

@@ -914,6 +914,10 @@ llama_model_deepseek41::graph::graph(const llm_graph_params & params) :
         cb(inpL, "l_out", il);
     }
 
+    if (final_layer_inp_requested()) {
+        set_final_layer_inp(build_hc_mean(inpL));
+    }
+
     // no hc_head: collapse with the last FFN's pre-mix
     if (inp_out_ids) {
         inpL     = ggml_reshape_3d(ctx0, ggml_get_rows(ctx0, ggml_reshape_2d(ctx0, inpL, n_embd*hc, n_tokens), inp_out_ids), n_embd, hc, inp_out_ids->ne[0]);

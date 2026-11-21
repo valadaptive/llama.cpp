@@ -299,7 +299,7 @@ llama_model_granite_switch::graph::graph(const llm_graph_params & params) : llm_
 
         cur = build_attention_layer(cur, inp_pos, adapter_ids, inp_attn, n_embd_head, il);
 
-        if (il == n_layer - 1 && inp_out_ids) {
+        if (il == n_layer - 1 && inp_out_ids && !defer_final_layer_inp_crop(inp_out_ids)) {
             cur   = ggml_get_rows(ctx0, cur,   inp_out_ids);
             inpSA = ggml_get_rows(ctx0, inpSA, inp_out_ids);
             // keep adapter_ids aligned to the kept rows (2D round-trip for get_rows)
@@ -411,6 +411,7 @@ ggml_tensor * llama_model_granite_switch::graph::build_layer_ffn(
     cur = ggml_add(ctx0, cur, ffn_inp);
 
     cur = build_cvec(cur, il);
+    cur = capture_final_layer_inp(cur, il == n_layer - 1);
     cb(cur, "l_out", il);
 
     return cur;
